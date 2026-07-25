@@ -1,0 +1,16 @@
+bin/
+obj/
+node_modules/
+dist/
+.env
+*.db
+*.db-shm
+*.db-wal
+.idea/
+.vscode/
+TestResults/
+playwright-report/
+.local-deploy/
+*.tsbuildinfo
+src/AiBus.Web/vite.config.js
+src/AiBus.Web/vite.config.d.ts
