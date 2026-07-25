@@ -1,6 +1,7 @@
 using System.Text;
 using AiBus.Api;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
 using Microsoft.OpenApi.Models;
@@ -9,7 +10,10 @@ var builder = WebApplication.CreateBuilder(args);
 if (!builder.Environment.IsDevelopment() && builder.Configuration["Jwt:Key"]?.StartsWith("CHANGE-ME", StringComparison.Ordinal) == true)
     throw new InvalidOperationException("Jwt__Key must be replaced in production.");
 builder.Services.AddDbContext<AppDbContext>(o => o.UseSqlite(builder.Configuration.GetConnectionString("Default")));
-builder.Services.AddDataProtection();
+var dataProtection = builder.Services.AddDataProtection();
+var dataProtectionKeysPath = builder.Configuration["DataProtection:KeysPath"];
+if (!string.IsNullOrWhiteSpace(dataProtectionKeysPath))
+    dataProtection.PersistKeysToFileSystem(new DirectoryInfo(dataProtectionKeysPath));
 builder.Services.AddScoped<SecretProtector>();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<SettingsService>();
