@@ -56,6 +56,74 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
         var result = await verify.Content.ReadFromJsonAsync<LoginResponse>();
         Assert.False(string.IsNullOrWhiteSpace(result?.Token));
         Assert.Equal(Roles.SuperAdmin, result?.User.Role);
+
+        const string rawApiKey = "aibus_integration_test_key";
+        string modelId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var user = await db.Users.SingleAsync(x => x.Mobile == "09015909044");
+            var model = await db.Models.FirstAsync();
+            var key = new UserApiKey
+            {
+                UserId = user.Id,
+                Name = "تست یکپارچگی",
+                KeyHash = Hashing.Sha256(rawApiKey),
+                KeyPrefix = rawApiKey[..12],
+                SpentUsd = 1.234567m,
+                RequestCount = 2
+            };
+            user.WalletUsd = 12.345678m;
+            db.UserApiKeys.Add(key);
+            db.UsageRecords.Add(new UsageRecord
+            {
+                UserId = user.Id,
+                UserApiKeyId = key.Id,
+                ModelId = model.Id,
+                ModelName = model.ModelId,
+                ProviderName = "integration",
+                InputTokens = 123,
+                OutputTokens = 45,
+                CostUsd = 0.012345m,
+                DurationMs = 321,
+                TraceId = "integration-trace"
+            });
+            await db.SaveChangesAsync();
+            modelId = model.ModelId;
+        }
+
+        var endpoints = new[]
+        {
+            "/api/me",
+            "/api/models",
+            "/api/keys",
+            "/api/dashboard",
+            "/api/dashboard?from=2020-01-01&to=2030-01-01",
+            "/api/usage?page=1&pageSize=20",
+            "/api/wallet/quote?amountUsd=10",
+            "/api/admin/settings",
+            "/api/admin/providers",
+            "/api/admin/models",
+            "/api/admin/users",
+            "/api/admin/users?sort=wallet",
+            "/api/admin/users?sort=requests",
+            $"/api/admin/users/{result!.User.Id}/keys",
+            "/api/admin/dashboard",
+            "/api/admin/visits?page=1&pageSize=20"
+        };
+        foreach (var endpoint in endpoints)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", result.Token);
+            var response = await _client.SendAsync(request);
+            Assert.True(response.IsSuccessStatusCode, $"{endpoint} returned {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+        }
+
+        using var gatewayRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions");
+        gatewayRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", rawApiKey);
+        gatewayRequest.Content = JsonContent.Create(new { model = modelId, messages = new[] { new { role = "user", content = "test" } } });
+        var gateway = await _client.SendAsync(gatewayRequest);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, gateway.StatusCode);
     }
 
     [Fact]
@@ -75,5 +143,5 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
 
     private sealed record OtpResponse(string? DebugCode);
     private sealed record LoginResponse(string Token, LoginUser User);
-    private sealed record LoginUser(string Role);
+    private sealed record LoginUser(string Id, string Role);
 }

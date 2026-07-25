@@ -20,7 +20,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         var modelName = context.Request.Query["model"].ToString();
         var model = await db.Models.Include(x => x.Provider).SingleOrDefaultAsync(x => x.ModelId == modelName && x.IsActive && x.SupportsWebSocket && x.Provider!.IsActive, ct);
         if (model?.Provider is null || !HasModelAccess(userKey, modelName) || user.WalletUsd <= 0) { context.Response.StatusCode = 403; return; }
-        var credential = await db.ProviderCredentials.Where(x => x.ProviderId == model.ProviderId && x.IsActive).OrderByDescending(x => x.RemainingBalanceUsd).FirstOrDefaultAsync(ct);
+        var credential = await db.ProviderCredentials.Where(x => x.ProviderId == model.ProviderId && x.IsActive).OrderByDescending(x => (double)x.RemainingBalanceUsd).FirstOrDefaultAsync(ct);
         if (credential is null) { context.Response.StatusCode = 503; return; }
 
         var baseUrl = model.Provider.BaseUrl.TrimEnd('/').Replace("https://", "wss://", StringComparison.OrdinalIgnoreCase).Replace("http://", "ws://", StringComparison.OrdinalIgnoreCase);
@@ -65,7 +65,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             if (userKey.SpendLimitUsd.HasValue && userKey.SpentUsd >= userKey.SpendLimitUsd.Value) { await WriteError(context, 429, "spend_limit", "سقف هزینه این کلید تمام شده است."); return; }
 
             var credentials = await db.ProviderCredentials.Where(x => x.ProviderId == model.ProviderId && x.IsActive)
-                .OrderByDescending(x => x.RemainingBalanceUsd > x.AlertThresholdUsd).ThenBy(x => x.LastUsedAtUtc).ToListAsync(ct);
+                .OrderByDescending(x => (double)x.RemainingBalanceUsd > (double)x.AlertThresholdUsd).ThenBy(x => x.LastUsedAtUtc).ToListAsync(ct);
             if (credentials.Count == 0) { await WriteError(context, 503, "provider_unavailable", "کلید فعالی برای ارائه‌دهنده تنظیم نشده است."); return; }
 
             var stream = body.RootElement.TryGetProperty("stream", out var streamProperty) && streamProperty.ValueKind == JsonValueKind.True;
