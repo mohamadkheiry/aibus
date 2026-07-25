@@ -127,9 +127,9 @@ public static class Routes
             var result = await zarinpal.Request(irr, tx.Description!, callback, ct); if (!result.ok) { tx.Status = "failed"; await db.SaveChangesAsync(ct); return Results.BadRequest(new { message = result.error }); }
             tx.Authority = result.authority; await db.SaveChangesAsync(ct); return Results.Ok(new { tx.Id, tx.AmountUsd, tx.AmountIrr, tx.ExchangeRateIrr, tx.FeePercent, authority = result.authority, paymentUrl = $"https://www.zarinpal.com/pg/StartPay/{result.authority}" });
         });
-        app.MapGet("/api/wallet/callback", async ([FromQuery] Guid transactionId, [FromQuery] string? Authority, [FromQuery] string? Status, AppDbContext db, ZarinpalService zarinpal, SettingsService settings, CancellationToken ct) =>
+        app.MapGet("/api/wallet/callback", async ([FromQuery] Guid transactionId, [FromQuery] string? Authority, [FromQuery] string? Status, AppDbContext db, ZarinpalService zarinpal, SettingsService settings, IConfiguration config, CancellationToken ct) =>
         {
-            var tx = await db.WalletTransactions.FindAsync([transactionId], ct); var front = await settings.Get("web.public_url", "http://localhost:5173");
+            var tx = await db.WalletTransactions.FindAsync([transactionId], ct); var front = await settings.Get("web.public_url", config["Web:PublicUrl"] ?? "http://localhost:5173");
             if (tx is null || tx.Status != "pending" || Status != "OK" || Authority != tx.Authority) return Results.Redirect($"{front}/payment/callback?status=failed");
             var verified = await zarinpal.Verify(tx.AmountIrr, Authority!, ct); if (!verified.ok) { tx.Status = "failed"; await db.SaveChangesAsync(ct); return Results.Redirect($"{front}/payment/callback?status=failed"); }
             await using var transaction = await db.Database.BeginTransactionAsync(ct); tx.Status = "completed"; tx.ReferenceId = verified.refId; tx.CompletedAtUtc = DateTime.UtcNow; var user = await db.Users.FindAsync([tx.UserId], ct); if (user is not null) user.WalletUsd += tx.AmountUsd; await db.SaveChangesAsync(ct); await transaction.CommitAsync(ct); return Results.Redirect($"{front}/payment/callback?status=success&refId={verified.refId}");
