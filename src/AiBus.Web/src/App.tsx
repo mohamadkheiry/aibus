@@ -22,6 +22,7 @@ export default function App(){
   const [loading,setLoading]=useState(true)
   const [page,setPage]=useState<Page>('dashboard')
   const [sidebar,setSidebar]=useState(false)
+  const [authView,setAuthView]=useState<'landing'|'login'>('landing')
   const [dark,setDark]=useState(()=>localStorage.getItem('aibus_theme')!=='light')
 
   useEffect(()=>{document.documentElement.dataset.theme=dark?'dark':'light';localStorage.setItem('aibus_theme',dark?'dark':'light')},[dark])
@@ -29,9 +30,9 @@ export default function App(){
   useEffect(()=>{fetch(`${API}/api/analytics/visit`,{method:'POST',headers:{'Content-Type':'application/json',...(localStorage.getItem('aibus_token')?{Authorization:`Bearer ${localStorage.getItem('aibus_token')}`}:{})},body:JSON.stringify({path:location.pathname,referrer:document.referrer}),credentials:'include'}).catch(()=>{})},[page,user])
   const refreshUser=useCallback(()=>{void request<User>('/api/me').then(setUser)},[])
   if(loading)return <Splash />
-  if(!user)return <Login onLogin={(u,t)=>{localStorage.setItem('aibus_token',t);setUser(u)}} />
+  if(!user)return authView==='landing'?<Landing onLogin={()=>setAuthView('login')}/>:<Login onBack={()=>setAuthView('landing')} onLogin={(u,t)=>{localStorage.setItem('aibus_token',t);setUser(u)}} />
   const isAdmin=user.role==='SuperAdmin'
-  const logout=()=>{localStorage.removeItem('aibus_token');setUser(null)}
+  const logout=()=>{localStorage.removeItem('aibus_token');setAuthView('landing');setUser(null)}
   return <div className="app-shell">
     <Sidebar page={page} setPage={p=>{setPage(p);setSidebar(false)}} admin={isAdmin} open={sidebar} close={()=>setSidebar(false)} />
     <main className="main">
@@ -59,11 +60,44 @@ export default function App(){
 function Splash(){return <div className="splash"><Logo/><div className="loader"/><span>در حال راه‌اندازی مرکز فرمان...</span></div>}
 function Logo(){return <div className="brand"><div className="brand-mark"><Sparkles/></div><div><b>Ai<span>Bus</span></b><small>AI Gateway</small></div></div>}
 
-function Login({onLogin}:{onLogin:(u:User,t:string)=>void}){
+function Landing({onLogin}:{onLogin:()=>void}){
+  const providers=['OpenAI','Gemini','Claude','DeepSeek','Kimi','GLM','xAI','Mistral','Qwen','Cohere']
+  const features=[
+    {icon:Network,title:'یک API برای تمام مدل‌ها',text:'بدون تغییر معماری، بین ده‌ها مدل از معتبرترین شرکت‌های جهان جابه‌جا شوید.'},
+    {icon:Gauge,title:'کنترل کامل هزینه',text:'قیمت‌گذاری دقیق توکن ورودی و خروجی، کیف پول دلاری و گزارش‌های لحظه‌ای.'},
+    {icon:KeyRound,title:'کلیدهای دسترسی هوشمند',text:'برای هر پروژه سقف هزینه، تعداد درخواست و مدل‌های مجاز یا غیرمجاز تعریف کنید.'},
+    {icon:Activity,title:'Streaming و Realtime',text:'پشتیبانی یکپارچه از پاسخ معمولی، SSE Stream و ارتباط WebSocket.'},
+    {icon:ShieldCheck,title:'امنیت در سطح سازمانی',text:'رمزنگاری اسرار، کلیدهای هش‌شده و کنترل دسترسی مستقل برای هر سرویس.'},
+    {icon:BarChart3,title:'تحلیل عمیق مصرف',text:'نمودار توکن، هزینه، مدل و عملکرد در بازه‌های شمسی و میلادی.'}
+  ]
+  return <div className="landing-page">
+    <div className="landing-glow glow-one"/><div className="landing-glow glow-two"/>
+    <nav className="landing-nav">
+      <Logo/>
+      <div className="landing-links"><a href="#capabilities">قابلیت‌ها</a><a href="#providers">مدل‌ها</a><a href="#workflow">چطور کار می‌کند؟</a><a href="#security">امنیت</a></div>
+      <div className="landing-actions"><button className="landing-login" onClick={onLogin}>ورود به پنل</button><button className="landing-start" onClick={onLogin}>شروع رایگان <ArrowLeft/></button></div>
+    </nav>
+    <main>
+      <section className="landing-hero">
+        <div className="landing-hero-copy"><span className="landing-kicker"><i/><Sparkles/>زیرساخت هوش مصنوعی برای کسب‌وکارهای آینده</span><h1>تمام مدل‌های هوش مصنوعی،<br/><em>پشت یک API.</em></h1><p>با AiBus به قدرتمندترین مدل‌های جهان متصل شوید، هزینه‌ها را دقیق کنترل کنید و همه‌چیز را از یک داشبورد فارسی حرفه‌ای مدیریت کنید.</p><div className="hero-actions"><button className="landing-start hero-main" onClick={onLogin}>ساخت حساب و شروع <ArrowLeft/></button><a className="hero-secondary" href="#workflow"><Code2/>مشاهده نحوه اتصال</a></div><div className="hero-trust"><span><Check/>بدون هزینه راه‌اندازی</span><span><Check/>پرداخت ریالی</span><span><Check/>مقیاس‌پذیر و امن</span></div></div>
+        <div className="gateway-showcase"><div className="showcase-halo"/><div className="code-window"><header><div className="window-dots"><i/><i/><i/></div><span>AI Gateway Request</span><Badge tone="mint">LIVE</Badge></header><div className="code-body" dir="ltr"><div><b>POST</b> /v1/chat/completions</div><pre>{'{\n  "model": "gpt-5.6-luna",\n  "messages": [{\n    "role": "user",\n    "content": "سلام AiBus"\n  }],\n  "stream": true\n}'}</pre></div><footer><span><i/>200 OK</span><span>842ms</span><span>1,284 tokens</span><strong>$0.0042</strong></footer></div><div className="float-chip chip-a"><Bot/><span><b>۳۹+ مدل</b><small>همیشه به‌روز</small></span></div><div className="float-chip chip-b"><ShieldCheck/><span><b>اتصال امن</b><small>Encrypted</small></span></div><div className="float-chip chip-c"><Zap/><span><b>Realtime</b><small>SSE + WebSocket</small></span></div></div>
+      </section>
+      <section className="landing-stats"><div><strong>۱۰+</strong><span>ارائه‌دهنده جهانی</span></div><div><strong>۳۹+</strong><span>مدل آماده استفاده</span></div><div><strong>۹۹.۹٪</strong><span>دسترسی پایدار</span></div><div><strong>&lt; ۱ ثانیه</strong><span>زمان مسیریابی</span></div></section>
+      <section className="provider-belt" id="providers"><p>یک اتصال ساده به بهترین مدل‌های جهان</p><div>{providers.map((p,i)=><span key={p}><i>{p.slice(0,2)}</i>{p}{i<providers.length-1&&<b>◆</b>}</span>)}</div></section>
+      <section className="landing-section" id="capabilities"><div className="section-intro"><span>قدرت در سادگی</span><h2>همه‌چیزی که برای ساخت<br/>محصول هوشمند نیاز دارید</h2><p>زیرساخت پیچیده‌ی مدل‌ها را به ما بسپارید و روی تجربه‌ای که برای کاربران خود می‌سازید تمرکز کنید.</p></div><div className="feature-grid">{features.map(({icon:Icon,title,text},i)=><article key={title} className={`feature-tile feature-${i+1}`}><div><Icon/></div><span>۰{i+1}</span><h3>{title}</h3><p>{text}</p><a href="#workflow">بیشتر بدانید <ArrowLeft/></a></article>)}</div></section>
+      <section className="workflow-section" id="workflow"><div className="workflow-copy"><span className="landing-kicker"><i/>راه‌اندازی در چند دقیقه</span><h2>از ثبت‌نام تا اولین پاسخ،<br/><em>فقط سه قدم.</em></h2><div className="workflow-steps"><div><b>۱</b><span><strong>حساب خود را شارژ کنید</strong><small>پرداخت ریالی امن با درگاه زرین‌پال</small></span></div><div><b>۲</b><span><strong>یک کلید API بسازید</strong><small>محدودیت هزینه، درخواست و مدل را تنظیم کنید</small></span></div><div><b>۳</b><span><strong>اولین درخواست را بفرستید</strong><small>با استاندارد سازگار با OpenAI، بدون بازنویسی کد</small></span></div></div><button className="landing-start" onClick={onLogin}>ورود و ساخت کلید <ArrowLeft/></button></div><div className="terminal-card"><header><span><i/><i/><i/></span><code>quick-start.sh</code><Badge tone="mint">آماده</Badge></header><pre dir="ltr"><span>curl</span>{' https://api.aibus.ir/v1/chat/completions \\\n  -H '}<b>"Authorization: Bearer aibus_..."</b>{' \\\n  -H '}<b>"Content-Type: application/json"</b>{' \\\n  -d '}<em>'{`{"model":"claude-sonnet-5","messages":[...]}`}'</em></pre><div className="terminal-result"><Check/><span><b>پاسخ با موفقیت دریافت شد</b><small>Provider: Anthropic · Latency: 926ms</small></span><strong>$0.0068</strong></div></div></section>
+      <section className="security-section" id="security"><div className="security-orb"><ShieldCheck/><i/><i/><i/></div><div><span>امنیت بدون مصالحه</span><h2>کلیدها و اعتبار شما،<br/>همیشه محافظت می‌شوند.</h2><p>از رمزنگاری Data Protection تا هش یک‌طرفه‌ی کلیدهای کاربران و تفکیک کامل دسترسی‌ها، امنیت در تمام لایه‌های AiBus طراحی شده است.</p><div><span><Check/>رمزنگاری اسرار</span><span><Check/>کنترل دسترسی مدل</span><span><Check/>محدودیت هزینه</span><span><Check/>گزارش کامل رخدادها</span></div></div></section>
+      <section className="landing-cta"><div className="cta-stars"><Sparkles/><Sparkles/><Sparkles/></div><span>آماده‌اید هوشمندتر بسازید؟</span><h2>همین امروز به دنیای مدل‌های<br/>هوش مصنوعی متصل شوید.</h2><p>یک حساب، یک کیف پول و یک API برای تمام مدل‌هایی که نیاز دارید.</p><button onClick={onLogin}>ورود به AiBus و شروع <ArrowLeft/></button></section>
+    </main>
+    <footer className="landing-footer"><Logo/><p>زیرساخت یکپارچه و فارسی API هوش مصنوعی</p><div><a href="#capabilities">قابلیت‌ها</a><a href="#security">امنیت</a><button onClick={onLogin}>ورود به پنل</button></div><small>© ۱۴۰۵ AiBus. تمام حقوق محفوظ است.</small></footer>
+  </div>
+}
+
+function Login({onLogin,onBack}:{onLogin:(u:User,t:string)=>void;onBack:()=>void}){
   const [mobile,setMobile]=useState('09015909044'),[code,setCode]=useState(''),[step,setStep]=useState<1|2>(1),[busy,setBusy]=useState(false),[debug,setDebug]=useState('')
   const submit=async(e:FormEvent)=>{e.preventDefault();setBusy(true);try{if(step===1){const r=await request<{debugCode?:string;message:string}>('/api/auth/request-otp',{method:'POST',body:JSON.stringify({mobile})});setDebug(r.debugCode||'');setStep(2);toast.success(r.message)}else{const r=await request<{token:string;user:User}>('/api/auth/verify-otp',{method:'POST',body:JSON.stringify({mobile,code})});onLogin(r.user,r.token)}}catch(e){toast.error((e as Error).message)}finally{setBusy(false)}}
-  return <div className="login-page"><div className="login-orb orb-a"/><div className="login-orb orb-b"/><section className="login-story">
-    <Logo/><div className="hero-copy"><span className="eyebrow"><Zap/>یک API، تمام مدل‌ها</span><h1>مرکز فرمان<br/><em>هوش مصنوعی</em> شما</h1><p>مدل‌های برتر دنیا، مدیریت هزینه و گزارش‌های دقیق؛ همه در یک مسیر امن و یکپارچه.</p></div>
+  return <div className="login-page"><button className="login-back" onClick={onBack}><ArrowLeft/>بازگشت به صفحه اصلی</button><div className="login-orb orb-a"/><div className="login-orb orb-b"/><section className="login-story">
+    <button className="logo-button" onClick={onBack}><Logo/></button><div className="hero-copy"><span className="eyebrow"><Zap/>یک API، تمام مدل‌ها</span><h1>مرکز فرمان<br/><em>هوش مصنوعی</em> شما</h1><p>مدل‌های برتر دنیا، مدیریت هزینه و گزارش‌های دقیق؛ همه در یک مسیر امن و یکپارچه.</p></div>
     <div className="trust-row"><div><ShieldCheck/><span><b>امن و کنترل‌شده</b><small>سیاست دسترسی هر کلید</small></span></div><div><Activity/><span><b>محاسبه لحظه‌ای</b><small>توکن و هزینه دقیق</small></span></div></div>
     <div className="model-cloud"><span>OpenAI</span><span>Gemini</span><span>Claude</span><span>DeepSeek</span><span>Kimi</span><span>GLM</span></div>
   </section><section className="login-panel"><form className="login-card" onSubmit={submit}>
