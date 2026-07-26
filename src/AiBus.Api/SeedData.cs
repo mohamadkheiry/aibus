@@ -10,6 +10,37 @@ public static class SeedData
     public static async Task Initialize(AppDbContext db)
     {
         await db.Database.EnsureCreatedAsync();
+        // EnsureCreated does not add new tables to an existing SQLite database.
+        // These idempotent statements preserve all current production data while enabling support tickets.
+        await db.Database.ExecuteSqlRawAsync("""
+            CREATE TABLE IF NOT EXISTS "SupportTickets" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_SupportTickets" PRIMARY KEY,
+                "UserId" TEXT NOT NULL,
+                "ReferenceCode" TEXT NOT NULL,
+                "Subject" TEXT NOT NULL,
+                "Category" TEXT NOT NULL,
+                "Priority" TEXT NOT NULL,
+                "Status" TEXT NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL,
+                "UpdatedAtUtc" TEXT NOT NULL,
+                "LastReplyAtUtc" TEXT NOT NULL,
+                "ClosedAtUtc" TEXT NULL,
+                CONSTRAINT "FK_SupportTickets_Users_UserId" FOREIGN KEY ("UserId") REFERENCES "Users" ("Id") ON DELETE CASCADE
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS "IX_SupportTickets_ReferenceCode" ON "SupportTickets" ("ReferenceCode");
+            CREATE INDEX IF NOT EXISTS "IX_SupportTickets_UserId_UpdatedAtUtc" ON "SupportTickets" ("UserId", "UpdatedAtUtc");
+            CREATE INDEX IF NOT EXISTS "IX_SupportTickets_Status_Priority_UpdatedAtUtc" ON "SupportTickets" ("Status", "Priority", "UpdatedAtUtc");
+            CREATE TABLE IF NOT EXISTS "TicketMessages" (
+                "Id" TEXT NOT NULL CONSTRAINT "PK_TicketMessages" PRIMARY KEY,
+                "TicketId" TEXT NOT NULL,
+                "AuthorUserId" TEXT NOT NULL,
+                "IsStaff" INTEGER NOT NULL,
+                "Body" TEXT NOT NULL,
+                "CreatedAtUtc" TEXT NOT NULL,
+                CONSTRAINT "FK_TicketMessages_SupportTickets_TicketId" FOREIGN KEY ("TicketId") REFERENCES "SupportTickets" ("Id") ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS "IX_TicketMessages_TicketId_CreatedAtUtc" ON "TicketMessages" ("TicketId", "CreatedAtUtc");
+            """);
         if (!await db.Users.AnyAsync(x => x.Mobile == "09015909044"))
             db.Users.Add(new AppUser { Mobile = "09015909044", DisplayName = "سوپر ادمین", Role = Roles.SuperAdmin });
 
@@ -27,7 +58,7 @@ public static class SeedData
         {
             var providers = new[]
             {
-                new ProviderSeed("OpenAI", "openai", "https://cdn.simpleicons.org/openai/10A37F", "https://api.openai.com/v1", "https://developers.openai.com/api/docs/pricing", "openai"),
+                new ProviderSeed("OpenAI", "openai", "/providers/openai.svg", "https://api.openai.com/v1", "https://developers.openai.com/api/docs/pricing", "openai"),
                 new ProviderSeed("Google Gemini", "gemini", "https://cdn.simpleicons.org/googlegemini/8E75B2", "https://generativelanguage.googleapis.com/v1beta/openai", "https://ai.google.dev/gemini-api/docs/pricing", "openai"),
                 new ProviderSeed("Anthropic", "anthropic", "https://cdn.simpleicons.org/anthropic/191919", "https://api.anthropic.com/v1", "https://platform.claude.com/docs/en/about-claude/pricing", "anthropic"),
                 new ProviderSeed("DeepSeek", "deepseek", "https://cdn.simpleicons.org/deepseek/4D6BFE", "https://api.deepseek.com", "https://api-docs.deepseek.com/quick_start/pricing", "openai"),
@@ -36,7 +67,7 @@ public static class SeedData
                 new ProviderSeed("xAI", "xai", "https://cdn.simpleicons.org/x/111111", "https://api.x.ai/v1", "https://docs.x.ai/developers/pricing", "openai"),
                 new ProviderSeed("Mistral AI", "mistral", "https://cdn.simpleicons.org/mistralai/FF7000", "https://api.mistral.ai/v1", "https://mistral.ai/pricing/api/", "openai"),
                 new ProviderSeed("Alibaba Qwen", "qwen", "https://cdn.simpleicons.org/alibabacloud/FF6A00", "https://dashscope-intl.aliyuncs.com/compatible-mode/v1", "https://www.alibabacloud.com/help/en/model-studio/model-pricing", "openai"),
-                new ProviderSeed("Cohere", "cohere", "https://cdn.simpleicons.org/cohere/39594D", "https://api.cohere.com/compatibility/v1", "https://cohere.com/pricing", "openai")
+                new ProviderSeed("Cohere", "cohere", "/providers/cohere.svg", "https://api.cohere.com/compatibility/v1", "https://cohere.com/pricing", "openai")
             };
             db.Providers.AddRange(providers.Select(x => new AiProvider { Name = x.Name, Slug = x.Slug, LogoUrl = x.Logo, BaseUrl = x.BaseUrl, PricingUrl = x.PricingUrl, Protocol = x.Protocol }));
             await db.SaveChangesAsync();

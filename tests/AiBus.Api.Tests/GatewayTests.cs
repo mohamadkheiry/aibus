@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using AiBus.Api;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -134,6 +135,50 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
     }
 
     [Fact]
+    public async Task User_and_super_admin_can_exchange_support_ticket_messages()
+    {
+        var userOtpResponse = await _client.PostAsJsonAsync("/api/auth/request-otp", new { mobile = "09123456789" });
+        userOtpResponse.EnsureSuccessStatusCode();
+        var userOtp = await userOtpResponse.Content.ReadFromJsonAsync<OtpResponse>();
+        var userLoginResponse = await _client.PostAsJsonAsync("/api/auth/verify-otp", new { mobile = "09123456789", code = userOtp!.DebugCode });
+        userLoginResponse.EnsureSuccessStatusCode();
+        var userLogin = await userLoginResponse.Content.ReadFromJsonAsync<LoginResponse>();
+
+        using var createRequest = Authorized(HttpMethod.Post, "/api/tickets", userLogin!.Token, new { subject = "خطای فراخوانی مدل", category = "technical", priority = "high", message = "هنگام فراخوانی API خطای آزمایشی دریافت می‌کنم." });
+        var createResponse = await _client.SendAsync(createRequest);
+        createResponse.EnsureSuccessStatusCode();
+        using var created = JsonDocument.Parse(await createResponse.Content.ReadAsStringAsync());
+        var ticketId = created.RootElement.GetProperty("id").GetString();
+        Assert.False(string.IsNullOrWhiteSpace(ticketId));
+
+        var adminOtpResponse = await _client.PostAsJsonAsync("/api/auth/request-otp", new { mobile = "09015909044" });
+        adminOtpResponse.EnsureSuccessStatusCode();
+        var adminOtp = await adminOtpResponse.Content.ReadFromJsonAsync<OtpResponse>();
+        var adminLoginResponse = await _client.PostAsJsonAsync("/api/auth/verify-otp", new { mobile = "09015909044", code = adminOtp!.DebugCode });
+        adminLoginResponse.EnsureSuccessStatusCode();
+        var adminLogin = await adminLoginResponse.Content.ReadFromJsonAsync<LoginResponse>();
+
+        using var adminListRequest = Authorized(HttpMethod.Get, "/api/admin/tickets?status=open", adminLogin!.Token);
+        var adminListResponse = await _client.SendAsync(adminListRequest);
+        adminListResponse.EnsureSuccessStatusCode();
+        var listJson = await adminListResponse.Content.ReadAsStringAsync();
+        Assert.Contains("خطای فراخوانی مدل", listJson);
+
+        using var replyRequest = Authorized(HttpMethod.Post, $"/api/admin/tickets/{ticketId}/messages", adminLogin.Token, new { message = "پاسخ پشتیبانی آزمایشی ثبت شد." });
+        (await _client.SendAsync(replyRequest)).EnsureSuccessStatusCode();
+        using var resolveRequest = Authorized(HttpMethod.Put, $"/api/admin/tickets/{ticketId}", adminLogin.Token, new { status = "resolved", priority = "high" });
+        (await _client.SendAsync(resolveRequest)).EnsureSuccessStatusCode();
+
+        using var userDetailRequest = Authorized(HttpMethod.Get, $"/api/tickets/{ticketId}", userLogin.Token);
+        var userDetailResponse = await _client.SendAsync(userDetailRequest);
+        userDetailResponse.EnsureSuccessStatusCode();
+        using var detail = JsonDocument.Parse(await userDetailResponse.Content.ReadAsStringAsync());
+        Assert.Equal("resolved", detail.RootElement.GetProperty("status").GetString());
+        Assert.Equal(2, detail.RootElement.GetProperty("messages").GetArrayLength());
+        Assert.True(detail.RootElement.GetProperty("messages")[1].GetProperty("isStaff").GetBoolean());
+    }
+
+    [Fact]
     public void Hashing_is_stable_and_keys_are_prefixed()
     {
         Assert.Equal(Hashing.Sha256("secret"), Hashing.Sha256("secret"));
@@ -144,4 +189,11 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
     private sealed record OtpResponse(string? DebugCode);
     private sealed record LoginResponse(string Token, LoginUser User);
     private sealed record LoginUser(string Id, string Role);
+    private static HttpRequestMessage Authorized(HttpMethod method, string path, string token, object? body = null)
+    {
+        var request = new HttpRequestMessage(method, path);
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        if (body is not null) request.Content = JsonContent.Create(body);
+        return request;
+    }
 }

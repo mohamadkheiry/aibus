@@ -16,6 +16,8 @@ export async function request<T=unknown>(path:string, options:RequestInit={}) : 
   return body as T
 }
 
-export const money = (n:number, digits=2) => new Intl.NumberFormat('fa-IR',{minimumFractionDigits:digits,maximumFractionDigits:digits}).format(n)
-export const number = (n:number) => new Intl.NumberFormat('fa-IR',{notation:n>999999?'compact':'standard',maximumFractionDigits:1}).format(n)
+const formatWithDotDecimal = (n:number, options:Intl.NumberFormatOptions) =>
+  new Intl.NumberFormat('fa-IR',options).formatToParts(n).map(part=>part.type==='decimal'?'.':part.value).join('')
+export const money = (n:number, digits=2) => formatWithDotDecimal(n,{minimumFractionDigits:digits,maximumFractionDigits:digits})
+export const number = (n:number) => formatWithDotDecimal(n,{notation:n>999999?'compact':'standard',maximumFractionDigits:1})
 export const dateTime = (v:string|Date) => new Intl.DateTimeFormat('fa-IR-u-ca-persian',{dateStyle:'medium',timeStyle:'short'}).format(new Date(v))

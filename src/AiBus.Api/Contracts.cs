@@ -15,6 +15,9 @@ public sealed record ModelRequest(Guid ProviderId, string ModelId, string Displa
 public sealed record WalletAdjustRequest(decimal AmountUsd, string Description);
 public sealed record SuspendRequest(bool IsSuspended);
 public sealed record CredentialBalanceRequest(decimal RemainingBalanceUsd, decimal AlertThresholdUsd);
+public sealed record CreateTicketRequest(string Subject, string Category, string Priority, string Message);
+public sealed record TicketMessageRequest(string Message);
+public sealed record UpdateTicketRequest(string Status, string Priority);
 
 public sealed class OpenAiChatRequest
 {

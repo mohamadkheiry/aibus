@@ -15,6 +15,8 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
     public DbSet<SystemSetting> Settings => Set<SystemSetting>();
     public DbSet<VisitEvent> Visits => Set<VisitEvent>();
     public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
+    public DbSet<SupportTicket> SupportTickets => Set<SupportTicket>();
+    public DbSet<TicketMessage> TicketMessages => Set<TicketMessage>();
 
     protected override void OnModelCreating(ModelBuilder b)
     {
@@ -25,6 +27,10 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         b.Entity<WalletTransaction>().HasIndex(x => x.Authority);
         b.Entity<UsageRecord>().HasIndex(x => new { x.UserId, x.CreatedAtUtc });
         b.Entity<VisitEvent>().HasIndex(x => x.CreatedAtUtc);
+        b.Entity<SupportTicket>().HasIndex(x => x.ReferenceCode).IsUnique();
+        b.Entity<SupportTicket>().HasIndex(x => new { x.UserId, x.UpdatedAtUtc });
+        b.Entity<SupportTicket>().HasIndex(x => new { x.Status, x.Priority, x.UpdatedAtUtc });
+        b.Entity<TicketMessage>().HasIndex(x => new { x.TicketId, x.CreatedAtUtc });
 
         b.Entity<AppUser>().Property(x => x.WalletUsd).HasPrecision(18, 8);
         b.Entity<UserApiKey>().Property(x => x.SpentUsd).HasPrecision(18, 8);

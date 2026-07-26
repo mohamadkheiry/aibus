@@ -109,6 +109,39 @@ public static class Routes
             page = Math.Max(1, page); pageSize = Math.Clamp(pageSize, 10, 100); var q = db.UsageRecords.AsNoTracking().Where(x => x.UserId == p.UserId()).OrderByDescending(x => x.CreatedAtUtc); return Results.Ok(new { total = await q.CountAsync(ct), items = await q.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct) });
         });
 
+        api.MapGet("/tickets", async (System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
+        {
+            var tickets = await db.SupportTickets.AsNoTracking().Where(x => x.UserId == p.UserId()).Include(x => x.Messages).OrderByDescending(x => x.UpdatedAtUtc).ToListAsync(ct);
+            return Results.Ok(new { items = tickets.Select(x => TicketSummary(x, false)), counts = TicketCounts(tickets) });
+        });
+        api.MapPost("/tickets", async (CreateTicketRequest req, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
+        {
+            var subject = Clean(req.Subject, 160); var message = Clean(req.Message, 5000);
+            if (subject.Length < 3) return Results.BadRequest(new { message = "موضوع تیکت باید حداقل ۳ کاراکتر باشد." });
+            if (message.Length < 2) return Results.BadRequest(new { message = "متن تیکت نمی‌تواند خالی باشد." });
+            var now = DateTime.UtcNow;
+            var ticket = new SupportTicket { UserId = p.UserId(), ReferenceCode = $"TKT-{now:yyMMdd}-{Guid.NewGuid():N}"[..17].ToUpperInvariant(), Subject = subject, Category = ValidTicketCategory(req.Category), Priority = ValidTicketPriority(req.Priority), Status = "open", CreatedAtUtc = now, UpdatedAtUtc = now, LastReplyAtUtc = now };
+            ticket.Messages.Add(new TicketMessage { AuthorUserId = p.UserId(), Body = message, CreatedAtUtc = now });
+            db.SupportTickets.Add(ticket); await db.SaveChangesAsync(ct);
+            return Results.Ok(TicketDetails(ticket, false));
+        });
+        api.MapGet("/tickets/{id:guid}", async (Guid id, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
+        {
+            var ticket = await db.SupportTickets.AsNoTracking().Include(x => x.Messages).SingleOrDefaultAsync(x => x.Id == id && x.UserId == p.UserId(), ct);
+            return ticket is null ? Results.NotFound() : Results.Ok(TicketDetails(ticket, false));
+        });
+        api.MapPost("/tickets/{id:guid}/messages", async (Guid id, TicketMessageRequest req, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
+        {
+            var ticket = await db.SupportTickets.SingleOrDefaultAsync(x => x.Id == id && x.UserId == p.UserId(), ct); if (ticket is null) return Results.NotFound();
+            if (ticket.Status == "closed") return Results.BadRequest(new { message = "این تیکت بسته شده است؛ برای موضوع جدید تیکت دیگری بسازید." });
+            var body = Clean(req.Message, 5000); if (body.Length < 2) return Results.BadRequest(new { message = "متن پیام نمی‌تواند خالی باشد." });
+            var now = DateTime.UtcNow; db.TicketMessages.Add(new TicketMessage { TicketId = ticket.Id, AuthorUserId = p.UserId(), Body = body, CreatedAtUtc = now }); ticket.Status = "waiting_support"; ticket.UpdatedAtUtc = now; ticket.LastReplyAtUtc = now; ticket.ClosedAtUtc = null; await db.SaveChangesAsync(ct); return Results.NoContent();
+        });
+        api.MapPost("/tickets/{id:guid}/close", async (Guid id, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
+        {
+            var ticket = await db.SupportTickets.SingleOrDefaultAsync(x => x.Id == id && x.UserId == p.UserId(), ct); if (ticket is null) return Results.NotFound(); var now = DateTime.UtcNow; ticket.Status = "closed"; ticket.ClosedAtUtc = now; ticket.UpdatedAtUtc = now; await db.SaveChangesAsync(ct); return Results.NoContent();
+        });
+
         api.MapGet("/wallet/quote", async ([FromQuery] decimal amountUsd, SettingsService settings) =>
         {
             amountUsd = Math.Clamp(amountUsd, 0, 10000);
@@ -176,6 +209,33 @@ public static class Routes
         admin.MapPost("/users/{id:guid}/wallet", async (Guid id, WalletAdjustRequest req, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, CancellationToken ct) => { var u = await db.Users.FindAsync([id], ct); if (u is null) return Results.NotFound(); if (u.WalletUsd + req.AmountUsd < 0) return Results.BadRequest(new { message = "موجودی نمی‌تواند منفی شود." }); u.WalletUsd += req.AmountUsd; db.WalletTransactions.Add(new WalletTransaction { UserId = id, Type = "admin_adjustment", AmountUsd = req.AmountUsd, Status = "completed", Description = req.Description, CompletedAtUtc = DateTime.UtcNow }); db.AuditLogs.Add(new AuditLog { ActorUserId = actor.UserId(), Action = "wallet.adjust", EntityType = "user", EntityId = id.ToString(), DetailsJson = JsonSerializer.Serialize(req) }); await db.SaveChangesAsync(ct); return Results.Ok(new { u.WalletUsd }); });
         admin.MapPost("/users/{id:guid}/impersonate", async (Guid id, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, TokenService tokens, CancellationToken ct) => { var u = await db.Users.FindAsync([id], ct); return u is null ? Results.NotFound() : Results.Ok(new { token = tokens.Create(u, actor.UserId()), user = UserView(u) }); });
 
+        admin.MapGet("/tickets", async (AppDbContext db, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? priority, CancellationToken ct) =>
+        {
+            var q = db.SupportTickets.AsNoTracking().Include(x => x.User).Include(x => x.Messages).AsQueryable();
+            if (!string.IsNullOrWhiteSpace(search)) { var term = search.Trim(); q = q.Where(x => x.ReferenceCode.Contains(term) || x.Subject.Contains(term) || x.User!.Mobile.Contains(term) || x.User.DisplayName.Contains(term)); }
+            if (!string.IsNullOrWhiteSpace(status) && ValidTicketStatuses.Contains(status)) q = q.Where(x => x.Status == status);
+            if (!string.IsNullOrWhiteSpace(priority) && TicketPriorities.Contains(priority)) q = q.Where(x => x.Priority == priority);
+            var tickets = await q.OrderBy(x => x.Status == "closed" || x.Status == "resolved").ThenByDescending(x => x.Priority == "urgent").ThenByDescending(x => x.UpdatedAtUtc).Take(300).ToListAsync(ct);
+            var allCounts = await db.SupportTickets.AsNoTracking().GroupBy(x => x.Status).Select(g => new { g.Key, Count = g.Count() }).ToListAsync(ct);
+            return Results.Ok(new { items = tickets.Select(x => TicketSummary(x, true)), counts = allCounts.ToDictionary(x => x.Key, x => x.Count) });
+        });
+        admin.MapGet("/tickets/{id:guid}", async (Guid id, AppDbContext db, CancellationToken ct) =>
+        {
+            var ticket = await db.SupportTickets.AsNoTracking().Include(x => x.User).Include(x => x.Messages).SingleOrDefaultAsync(x => x.Id == id, ct);
+            return ticket is null ? Results.NotFound() : Results.Ok(TicketDetails(ticket, true));
+        });
+        admin.MapPost("/tickets/{id:guid}/messages", async (Guid id, TicketMessageRequest req, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, CancellationToken ct) =>
+        {
+            var ticket = await db.SupportTickets.SingleOrDefaultAsync(x => x.Id == id, ct); if (ticket is null) return Results.NotFound();
+            var body = Clean(req.Message, 5000); if (body.Length < 2) return Results.BadRequest(new { message = "متن پاسخ نمی‌تواند خالی باشد." });
+            var now = DateTime.UtcNow; db.TicketMessages.Add(new TicketMessage { TicketId = ticket.Id, AuthorUserId = actor.UserId(), IsStaff = true, Body = body, CreatedAtUtc = now }); ticket.Status = "waiting_user"; ticket.UpdatedAtUtc = now; ticket.LastReplyAtUtc = now; ticket.ClosedAtUtc = null; db.AuditLogs.Add(new AuditLog { ActorUserId = actor.UserId(), Action = "ticket.reply", EntityType = "support_ticket", EntityId = id.ToString() }); await db.SaveChangesAsync(ct); return Results.NoContent();
+        });
+        admin.MapPut("/tickets/{id:guid}", async (Guid id, UpdateTicketRequest req, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, CancellationToken ct) =>
+        {
+            var ticket = await db.SupportTickets.SingleOrDefaultAsync(x => x.Id == id, ct); if (ticket is null) return Results.NotFound();
+            var status = ValidTicketStatuses.Contains(req.Status) ? req.Status : ticket.Status; var priority = TicketPriorities.Contains(req.Priority) ? req.Priority : ticket.Priority; var now = DateTime.UtcNow; ticket.Status = status; ticket.Priority = priority; ticket.UpdatedAtUtc = now; ticket.ClosedAtUtc = status is "closed" or "resolved" ? now : null; db.AuditLogs.Add(new AuditLog { ActorUserId = actor.UserId(), Action = "ticket.update", EntityType = "support_ticket", EntityId = id.ToString(), DetailsJson = JsonSerializer.Serialize(new { status, priority }) }); await db.SaveChangesAsync(ct); return Results.NoContent();
+        });
+
         admin.MapGet("/dashboard", async (AppDbContext db, CancellationToken ct) =>
         {
             var now = DateTime.UtcNow; var today = now.Date; var month = today.AddDays(-29); var usages = db.UsageRecords.AsNoTracking(); var visits = db.Visits.AsNoTracking();
@@ -195,6 +255,15 @@ public static class Routes
     }
 
     private static object UserView(AppUser x) => new { x.Id, x.Mobile, x.DisplayName, x.Role, x.WalletUsd, x.IsSuspended, x.CreatedAtUtc, x.LastSeenAtUtc };
+    private static readonly HashSet<string> TicketCategories = ["technical", "billing", "account", "models", "general"];
+    private static readonly HashSet<string> TicketPriorities = ["low", "normal", "high", "urgent"];
+    private static readonly HashSet<string> ValidTicketStatuses = ["open", "waiting_support", "waiting_user", "resolved", "closed"];
+    private static string Clean(string? value, int max) { var text = (value ?? "").Trim(); return text[..Math.Min(max, text.Length)]; }
+    private static string ValidTicketCategory(string value) => TicketCategories.Contains(value) ? value : "general";
+    private static string ValidTicketPriority(string value) => TicketPriorities.Contains(value) ? value : "normal";
+    private static object TicketSummary(SupportTicket x, bool includeUser) => new { x.Id, x.ReferenceCode, x.Subject, x.Category, x.Priority, x.Status, x.CreatedAtUtc, x.UpdatedAtUtc, x.LastReplyAtUtc, x.ClosedAtUtc, messageCount = x.Messages.Count, lastMessage = x.Messages.OrderByDescending(m => m.CreatedAtUtc).Select(m => m.Body).FirstOrDefault(), user = includeUser && x.User is not null ? new { x.User.Id, x.User.DisplayName, x.User.Mobile } : null };
+    private static object TicketDetails(SupportTicket x, bool includeUser) => new { x.Id, x.ReferenceCode, x.Subject, x.Category, x.Priority, x.Status, x.CreatedAtUtc, x.UpdatedAtUtc, x.LastReplyAtUtc, x.ClosedAtUtc, user = includeUser && x.User is not null ? new { x.User.Id, x.User.DisplayName, x.User.Mobile } : null, messages = x.Messages.OrderBy(m => m.CreatedAtUtc).Select(m => new { m.Id, m.IsStaff, m.Body, m.CreatedAtUtc }) };
+    private static Dictionary<string, int> TicketCounts(IEnumerable<SupportTicket> tickets) => tickets.GroupBy(x => x.Status).ToDictionary(x => x.Key, x => x.Count());
     private static string ValidAccessMode(string value) => value is "allow" or "deny" ? value : "all";
     private static string? NormalizeMobile(string value) { var digits = new string(value.Where(char.IsDigit).ToArray()); if (digits.StartsWith("98") && digits.Length == 12) digits = "0" + digits[2..]; if (digits.Length == 10 && digits.StartsWith('9')) digits = "0" + digits; return digits.Length == 11 && digits.StartsWith("09") ? digits : null; }
     private static AiModel ToModel(ModelRequest r) { var m = new AiModel(); Apply(m, r); return m; }

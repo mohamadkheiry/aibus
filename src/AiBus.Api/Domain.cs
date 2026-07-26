@@ -168,3 +168,31 @@ public sealed class AuditLog
     public string DetailsJson { get; set; } = "{}";
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
+
+public sealed class SupportTicket
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid UserId { get; set; }
+    public AppUser? User { get; set; }
+    [MaxLength(32)] public string ReferenceCode { get; set; } = "";
+    [MaxLength(160)] public string Subject { get; set; } = "";
+    [MaxLength(40)] public string Category { get; set; } = "general";
+    [MaxLength(20)] public string Priority { get; set; } = "normal";
+    [MaxLength(30)] public string Status { get; set; } = "open";
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime UpdatedAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime LastReplyAtUtc { get; set; } = DateTime.UtcNow;
+    public DateTime? ClosedAtUtc { get; set; }
+    public List<TicketMessage> Messages { get; set; } = [];
+}
+
+public sealed class TicketMessage
+{
+    public Guid Id { get; set; } = Guid.NewGuid();
+    public Guid TicketId { get; set; }
+    public SupportTicket? Ticket { get; set; }
+    public Guid AuthorUserId { get; set; }
+    public bool IsStaff { get; set; }
+    [MaxLength(5000)] public string Body { get; set; } = "";
+    public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
+}
