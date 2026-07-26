@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import toast from 'react-hot-toast'
 import {
   Activity, AlertTriangle, ArrowLeft, AudioLines, BarChart3, Bell, Bot, Check, ChevronDown, CircleDollarSign,
@@ -18,6 +18,52 @@ type Page = 'dashboard'|'models'|'keys'|'wallet'|'usage'|'tickets'|'admin-dashbo
 type IconType = typeof LayoutDashboard
 
 const COLORS = ['#66e3c4','#7b8cff','#ffb86b','#f472b6','#46b5ff','#a78bfa','#f87171','#34d399']
+
+function DragScroll({className,children}:{className:string;children:ReactNode}){
+  const elementRef=useRef<HTMLDivElement>(null)
+  const dragRef=useRef({pointerId:-1,startX:0,startScrollLeft:0,moved:false,suppressClickUntil:0})
+  const [dragging,setDragging]=useState(false)
+  useEffect(()=>{
+    const finish=(event:PointerEvent)=>{
+      if(dragRef.current.pointerId!==event.pointerId)return
+      dragRef.current.pointerId=-1
+      setDragging(false)
+    }
+    window.addEventListener('pointerup',finish)
+    window.addEventListener('pointercancel',finish)
+    return ()=>{window.removeEventListener('pointerup',finish);window.removeEventListener('pointercancel',finish)}
+  },[])
+  const finishDrag=(event:ReactPointerEvent<HTMLDivElement>)=>{
+    if(dragRef.current.pointerId!==event.pointerId)return
+    if(elementRef.current?.hasPointerCapture(event.pointerId))elementRef.current.releasePointerCapture(event.pointerId)
+    dragRef.current.pointerId=-1
+    setDragging(false)
+  }
+  const handlePointerDown=(event:ReactPointerEvent<HTMLDivElement>)=>{
+    if(event.pointerType!=='mouse'||event.button!==0)return
+    const element=elementRef.current
+    if(!element||element.scrollWidth<=element.clientWidth)return
+    dragRef.current={pointerId:event.pointerId,startX:event.clientX,startScrollLeft:element.scrollLeft,moved:false,suppressClickUntil:0}
+    element.setPointerCapture(event.pointerId)
+  }
+  const handlePointerMove=(event:ReactPointerEvent<HTMLDivElement>)=>{
+    const drag=dragRef.current
+    if(drag.pointerId!==event.pointerId||!elementRef.current)return
+    const distance=event.clientX-drag.startX
+    if(!drag.moved&&Math.abs(distance)<5)return
+    drag.moved=true
+    drag.suppressClickUntil=Date.now()+400
+    setDragging(true)
+    event.preventDefault()
+    elementRef.current.scrollLeft=drag.startScrollLeft-distance
+  }
+  const preventDraggedClick=(event:ReactMouseEvent<HTMLDivElement>)=>{
+    if(Date.now()>dragRef.current.suppressClickUntil)return
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  return <div ref={elementRef} className={`${className} drag-scroll${dragging?' is-dragging':''}`} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishDrag} onPointerCancel={finishDrag} onClickCapture={preventDraggedClick} onDragStart={event=>event.preventDefault()}>{children}</div>
+}
 
 export default function App(){
   const [user,setUser]=useState<User|null>(null)
@@ -156,8 +202,8 @@ function ModelsPage(){
   const filtered=models.filter(m=>(provider==='all'||m.provider.slug===provider)&&(service==='all'||m.serviceType===service)&&(`${m.displayName} ${m.modelId} ${m.provider.name}`.toLowerCase().includes(search.toLowerCase())))
   return <><PageHead eyebrow="کاتالوگ سرویس‌های هوش مصنوعی" title="متن، صدا و ترجمه؛ در یک مسیر" description="قیمت رسمی هر سرویس با واحد واقعی شرکت مبدأ؛ از توکن صوتی تا دقیقه و کاراکتر."><div className="sync-note"><RefreshCw/>آخرین همگام‌سازی: ۴ مرداد ۱۴۰۵</div></PageHead>
     <div className="catalog-hero audio-hero"><div><span><AudioLines/>کاتالوگ چندرسانه‌ای</span><h2>از صدای زنده تا ترجمه<br/>در لحظه.</h2><p>مدل‌های تبدیل متن و صوت، مکالمه صوت‌به‌صوت، رونویسی و ترجمه هم‌زمان با قیمت رسمی.</p></div><div className="audio-pulse"><Mic2/><i/><i/><i/></div></div>
-    <div className="service-tabs"><button className={service==='all'?'active':''} onClick={()=>setService('all')}><Sparkles/>همه سرویس‌ها <b>{models.length}</b></button>{serviceTypes.map(type=>{const Meta=SERVICE_META[type];const Icon=Meta.icon;return <button key={type} className={service===type?'active':''} onClick={()=>setService(type)}><Icon/>{Meta.label}<b>{models.filter(m=>m.serviceType===type).length}</b></button>})}</div>
-    <div className="catalog-tools"><div className="search-box"><Search/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="جست‌وجوی مدل، سرویس یا شرکت..."/></div><div className="provider-tabs"><button className={provider==='all'?'active':''} onClick={()=>setProvider('all')}>همه شرکت‌ها</button>{providers.map(p=><button key={p.slug} className={provider===p.slug?'active':''} onClick={()=>setProvider(p.slug)}><ProviderLogo name={p.name} url={p.logoUrl} className="tiny"/>{p.name}</button>)}</div></div>
+    <DragScroll className="service-tabs"><button className={service==='all'?'active':''} onClick={()=>setService('all')}><Sparkles/>همه سرویس‌ها <b>{models.length}</b></button>{serviceTypes.map(type=>{const Meta=SERVICE_META[type];const Icon=Meta.icon;return <button key={type} className={service===type?'active':''} onClick={()=>setService(type)}><Icon/>{Meta.label}<b>{models.filter(m=>m.serviceType===type).length}</b></button>})}</DragScroll>
+    <div className="catalog-tools"><div className="search-box"><Search/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="جست‌وجوی مدل، سرویس یا شرکت..."/></div><DragScroll className="provider-tabs"><button className={provider==='all'?'active':''} onClick={()=>setProvider('all')}>همه شرکت‌ها</button>{providers.map(p=><button key={p.slug} className={provider===p.slug?'active':''} onClick={()=>setProvider(p.slug)}><ProviderLogo name={p.name} url={p.logoUrl} className="tiny"/>{p.name}</button>)}</DragScroll></div>
     <div className="catalog-result"><span>{number(filtered.length)} سرویس</span><small>قیمت‌ها بدون تبدیل یا گردکردن، مطابق واحد اعلام‌شده توسط ارائه‌دهنده نمایش داده می‌شوند.</small></div>
     <div className="models-grid multimedia-grid">{filtered.map(m=>{const Icon=SERVICE_META[m.serviceType]?.icon||Bot;return <article className="model-card multimedia-card" key={m.id}><header><ProviderLogo name={m.provider.name} url={m.provider.logoUrl}/><div><span>{m.provider.name}</span><h3>{m.displayName}</h3><code dir="ltr">{m.modelId}</code></div><Badge tone={m.serviceType==='chat'?'mint':'violet'}><Icon/>{serviceLabel(m.serviceType)}</Badge></header><div className="pricing-components">{m.pricingComponents.map((price,i)=><div key={`${price.label}-${i}`} title={price.note||''}><span>{price.label}<small>{PRICE_UNIT_LABELS[price.unit]||price.unit}</small></span><strong dir="ltr">{priceText(price.priceUsd)}</strong></div>)}</div>{m.pricingNotes&&<p className="pricing-note"><AlertTriangle/>{m.pricingNotes}</p>}<div className="capabilities">{m.supportsStreaming&&<span><Activity/>Stream</span>}{m.supportsWebSocket&&<span><Zap/>WebSocket</span>}{m.isPreview&&<span><Sparkles/>Preview</span>}<span><Globe2/>{m.region==='international'?'بین‌المللی':m.region}</span></div><footer><a href={m.pricingSourceUrl} target="_blank" rel="noreferrer"><Globe2/>مرجع رسمی قیمت</a><button className="primary-btn compact" onClick={()=>setSelected(m)}><TestTube2/>آزمایش سرویس</button></footer></article>})}</div>{filtered.length===0&&<Empty text="سرویسی با این مشخصات پیدا نشد."/>}
     {selected&&(selected.serviceType==='chat'||selected.serviceType==='audio_understanding'?<JsonPlayground model={selected} close={()=>setSelected(null)}/>:<MediaPlayground model={selected} close={()=>setSelected(null)}/>)}</>
