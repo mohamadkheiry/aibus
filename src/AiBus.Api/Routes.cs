@@ -68,7 +68,11 @@ public static class Routes
             var user = await db.Users.FindAsync([principal.UserId()], ct); if (user is null) return Results.NotFound();
             user.DisplayName = req.DisplayName.Trim()[..Math.Min(100, req.DisplayName.Trim().Length)]; await db.SaveChangesAsync(ct); return Results.Ok(UserView(user));
         });
-        api.MapGet("/models", async (AppDbContext db, CancellationToken ct) => Results.Ok(await db.Models.AsNoTracking().Where(x => x.IsActive && x.Provider!.IsActive).Include(x => x.Provider).OrderBy(x => x.Provider!.Name).ThenBy(x => x.DisplayName).Select(x => new { x.Id, x.ModelId, x.DisplayName, x.Modality, x.InputPricePerMillionUsd, x.OutputPricePerMillionUsd, x.CachedInputPricePerMillionUsd, x.ContextWindow, x.SupportsStreaming, x.SupportsWebSocket, x.PriceSyncedAtUtc, x.PricingSourceUrl, x.TestPayloadJson, provider = new { x.ProviderId, x.Provider!.Name, x.Provider.Slug, x.Provider.LogoUrl } }).ToListAsync(ct)));
+        api.MapGet("/models", async (AppDbContext db, CancellationToken ct) =>
+        {
+            var models = await db.Models.AsNoTracking().Where(x => x.IsActive && x.Provider!.IsActive).Include(x => x.Provider).OrderBy(x => x.Provider!.Name).ThenBy(x => x.DisplayName).ToListAsync(ct);
+            return Results.Ok(models.Select(ModelView));
+        });
 
         api.MapGet("/keys", async (System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
         {
@@ -195,7 +199,11 @@ public static class Routes
             using var request = new HttpRequestMessage(HttpMethod.Post, c.Provider.BaseUrl.TrimEnd('/') + "/chat/completions"); request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secrets.Unprotect(c.ProtectedApiKey)); request.Content = JsonContent.Create(new { model = model.ModelId, messages = new[] { new { role = "user", content = "Reply only with OK" } }, max_tokens = 8 }); var sw = System.Diagnostics.Stopwatch.StartNew(); var response = await clients.CreateClient("providers").SendAsync(request, ct); var text = await response.Content.ReadAsStringAsync(ct); c.LastError = response.IsSuccessStatusCode ? null : text[..Math.Min(500, text.Length)]; await db.SaveChangesAsync(ct); return Results.Ok(new { success = response.IsSuccessStatusCode, status = (int)response.StatusCode, latencyMs = sw.ElapsedMilliseconds, response = text[..Math.Min(1000, text.Length)] });
         });
 
-        admin.MapGet("/models", async (AppDbContext db, CancellationToken ct) => Results.Ok(await db.Models.Include(x => x.Provider).OrderBy(x => x.Provider!.Name).ThenBy(x => x.DisplayName).Select(x => new { x.Id, x.ProviderId, providerName = x.Provider!.Name, x.ModelId, x.DisplayName, x.Modality, x.InputPricePerMillionUsd, x.OutputPricePerMillionUsd, x.CachedInputPricePerMillionUsd, x.ContextWindow, x.SupportsStreaming, x.SupportsWebSocket, x.IsActive, x.PriceSyncedAtUtc, x.PricingSourceUrl, x.TestPayloadJson }).ToListAsync(ct)));
+        admin.MapGet("/models", async (AppDbContext db, CancellationToken ct) =>
+        {
+            var models = await db.Models.AsNoTracking().Include(x => x.Provider).OrderBy(x => x.Provider!.Name).ThenBy(x => x.DisplayName).ToListAsync(ct);
+            return Results.Ok(models.Select(AdminModelView));
+        });
         admin.MapPost("/models", async (ModelRequest req, AppDbContext db, CancellationToken ct) => { var m = ToModel(req); db.Add(m); await db.SaveChangesAsync(ct); return Results.Ok(m); });
         admin.MapPut("/models/{id:guid}", async (Guid id, ModelRequest req, AppDbContext db, CancellationToken ct) => { var m = await db.Models.FindAsync([id], ct); if (m is null) return Results.NotFound(); Apply(m, req); await db.SaveChangesAsync(ct); return Results.NoContent(); });
         admin.MapDelete("/models/{id:guid}", async (Guid id, AppDbContext db, CancellationToken ct) => { var m = await db.Models.FindAsync([id], ct); if (m is null) return Results.NotFound(); m.IsActive = false; await db.SaveChangesAsync(ct); return Results.NoContent(); });
@@ -267,5 +275,21 @@ public static class Routes
     private static string ValidAccessMode(string value) => value is "allow" or "deny" ? value : "all";
     private static string? NormalizeMobile(string value) { var digits = new string(value.Where(char.IsDigit).ToArray()); if (digits.StartsWith("98") && digits.Length == 12) digits = "0" + digits[2..]; if (digits.Length == 10 && digits.StartsWith('9')) digits = "0" + digits; return digits.Length == 11 && digits.StartsWith("09") ? digits : null; }
     private static AiModel ToModel(ModelRequest r) { var m = new AiModel(); Apply(m, r); return m; }
-    private static void Apply(AiModel m, ModelRequest r) { m.ProviderId = r.ProviderId; m.ModelId = r.ModelId; m.DisplayName = r.DisplayName; m.Modality = r.Modality; m.InputPricePerMillionUsd = r.InputPricePerMillionUsd; m.OutputPricePerMillionUsd = r.OutputPricePerMillionUsd; m.CachedInputPricePerMillionUsd = r.CachedInputPricePerMillionUsd; m.ContextWindow = r.ContextWindow; m.SupportsStreaming = r.SupportsStreaming; m.SupportsWebSocket = r.SupportsWebSocket; m.IsActive = r.IsActive; m.PricingSourceUrl = r.PricingSourceUrl; m.TestPayloadJson = r.TestPayloadJson; m.PriceSyncedAtUtc = DateTime.UtcNow; }
+    private static void Apply(AiModel m, ModelRequest r) { m.ProviderId = r.ProviderId; m.ModelId = r.ModelId; m.DisplayName = r.DisplayName; m.Modality = r.Modality; m.InputPricePerMillionUsd = r.InputPricePerMillionUsd; m.OutputPricePerMillionUsd = r.OutputPricePerMillionUsd; m.CachedInputPricePerMillionUsd = r.CachedInputPricePerMillionUsd; m.ContextWindow = r.ContextWindow; m.SupportsStreaming = r.SupportsStreaming; m.SupportsWebSocket = r.SupportsWebSocket; m.IsActive = r.IsActive; m.PricingSourceUrl = r.PricingSourceUrl; m.TestPayloadJson = r.TestPayloadJson; m.ServiceType = Clean(r.ServiceType, 50) is { Length: > 0 } serviceType ? serviceType : "chat"; m.EndpointPath = Clean(r.EndpointPath, 200) is { Length: > 0 } endpoint ? endpoint : "/v1/chat/completions"; m.Region = Clean(r.Region, 80) is { Length: > 0 } region ? region : "global"; m.IsPreview = r.IsPreview; m.PricingDetailsJson = JsonSerializer.Serialize(r.PricingComponents ?? []); m.PricingNotes = Clean(r.PricingNotes, 1000); m.PriceSyncedAtUtc = DateTime.UtcNow; }
+    private static PricingComponentRequest[] PricingComponents(AiModel m)
+    {
+        try
+        {
+            var saved = JsonSerializer.Deserialize<PricingComponentRequest[]>(m.PricingDetailsJson, new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            if (saved is { Length: > 0 }) return saved;
+        }
+        catch (JsonException) { }
+        var prices = new List<PricingComponentRequest>();
+        prices.Add(new("ورودی متن", "million_text_tokens", m.InputPricePerMillionUsd, null));
+        prices.Add(new("خروجی متن", "million_text_tokens", m.OutputPricePerMillionUsd, null));
+        if (m.CachedInputPricePerMillionUsd is not null) prices.Add(new("ورودی Cache", "million_text_tokens", m.CachedInputPricePerMillionUsd, null));
+        return prices.ToArray();
+    }
+    private static object ModelView(AiModel x) => new { x.Id, x.ProviderId, x.ModelId, x.DisplayName, x.Modality, x.ServiceType, x.EndpointPath, x.Region, x.IsPreview, pricingComponents = PricingComponents(x), x.PricingNotes, x.InputPricePerMillionUsd, x.OutputPricePerMillionUsd, x.CachedInputPricePerMillionUsd, x.ContextWindow, x.SupportsStreaming, x.SupportsWebSocket, x.PriceSyncedAtUtc, x.PricingSourceUrl, x.TestPayloadJson, provider = new { x.ProviderId, x.Provider!.Name, x.Provider.Slug, x.Provider.LogoUrl } };
+    private static object AdminModelView(AiModel x) => new { x.Id, x.ProviderId, providerName = x.Provider!.Name, x.ModelId, x.DisplayName, x.Modality, x.ServiceType, x.EndpointPath, x.Region, x.IsPreview, pricingComponents = PricingComponents(x), x.PricingNotes, x.InputPricePerMillionUsd, x.OutputPricePerMillionUsd, x.CachedInputPricePerMillionUsd, x.ContextWindow, x.SupportsStreaming, x.SupportsWebSocket, x.IsActive, x.PriceSyncedAtUtc, x.PricingSourceUrl, x.TestPayloadJson };
 }

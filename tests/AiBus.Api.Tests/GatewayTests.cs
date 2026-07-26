@@ -120,6 +120,21 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
             Assert.True(response.IsSuccessStatusCode, $"{endpoint} returned {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
         }
 
+        using (var catalogRequest = Authorized(HttpMethod.Get, "/api/models", result.Token))
+        {
+            var catalogResponse = await _client.SendAsync(catalogRequest);
+            catalogResponse.EnsureSuccessStatusCode();
+            using var catalog = JsonDocument.Parse(await catalogResponse.Content.ReadAsStringAsync());
+            var models = catalog.RootElement.EnumerateArray().ToArray();
+            Assert.True(models.Length >= 90, $"Expected the full AI catalog, received {models.Length} services.");
+            Assert.Contains(models, x => x.GetProperty("serviceType").GetString() == "speech_to_text");
+            Assert.Contains(models, x => x.GetProperty("serviceType").GetString() == "text_to_speech");
+            Assert.Contains(models, x => x.GetProperty("serviceType").GetString() == "speech_to_speech" && x.GetProperty("supportsWebSocket").GetBoolean());
+            Assert.Contains(models, x => x.GetProperty("serviceType").GetString() == "realtime_translation");
+            Assert.Contains(models, x => x.GetProperty("pricingComponents").EnumerateArray().Any(p => p.GetProperty("unit").GetString() == "minute"));
+            Assert.Contains(models, x => x.GetProperty("pricingComponents").EnumerateArray().Any(p => p.GetProperty("unit").GetString() == "million_audio_tokens"));
+        }
+
         using var gatewayRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions");
         gatewayRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", rawApiKey);
         gatewayRequest.Content = JsonContent.Create(new { model = modelId, messages = new[] { new { role = "user", content = "test" } } });

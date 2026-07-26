@@ -70,6 +70,12 @@ public sealed class AiModel
     [MaxLength(120)] public string ModelId { get; set; } = "";
     [MaxLength(160)] public string DisplayName { get; set; } = "";
     [MaxLength(40)] public string Modality { get; set; } = "text";
+    [MaxLength(50)] public string ServiceType { get; set; } = "chat";
+    [MaxLength(200)] public string EndpointPath { get; set; } = "/v1/chat/completions";
+    [MaxLength(80)] public string Region { get; set; } = "global";
+    public bool IsPreview { get; set; }
+    public string PricingDetailsJson { get; set; } = "[]";
+    [MaxLength(1000)] public string PricingNotes { get; set; } = "";
     public decimal InputPricePerMillionUsd { get; set; }
     public decimal OutputPricePerMillionUsd { get; set; }
     public decimal? CachedInputPricePerMillionUsd { get; set; }

@@ -6,9 +6,10 @@
 
 - ورود بدون رمز با موبایل و OTP، با شماره `09015909044` به‌عنوان سوپرادمین اولیه
 - Gateway سازگار با OpenAI برای `chat/completions`، حالت SSE Stream و WebSocket Realtime
-- Providerهای پیش‌فرض OpenAI، Gemini، Anthropic، DeepSeek، Kimi، GLM، xAI، Mistral، Qwen و Cohere
+- کاتالوگ ۱۳۹ سرویس از ۱۷ ارائه‌دهنده شامل OpenAI، Gemini، Anthropic، DeepSeek، Kimi، GLM، xAI، Mistral، Qwen، Cohere، ElevenLabs، Deepgram، AssemblyAI، Google Cloud Speech، AWS، Speechmatics و Gladia
 - چند API key برای هر Provider، failover، موجودی اولیه، باقی‌مانده و هشدار کمبود اعتبار
-- قیمت ورودی، خروجی و cached input به‌ازای یک میلیون توکن، همراه لینک رسمی منبع و تاریخ snapshot
+- قیمت چندواحدی متن و صوت شامل توکن متن/صوت/تصویر، دقیقه، ساعت، ثانیه، کاراکتر، پیام و صدا، همراه لینک رسمی منبع و تاریخ snapshot
+- سرویس‌های تبدیل صوت‌به‌متن، متن‌به‌صوت، صوت‌به‌صوت، Live/Realtime، ترجمه هم‌زمان، دوبله، طراحی و شبیه‌سازی صدا
 - کیف پول دلاری، تبدیل به ریال با نرخ و کارمزد قابل تنظیم، Request/Verify زرین‌پال و ledger تراکنش‌ها
 - کلیدهای API کاربر با هش یک‌طرفه، سقف درخواست، سقف هزینه و سیاست `all` / `allow` / `deny` برای مدل‌ها
 - کسر مصرف بر اساس usage واقعی پاسخ Provider و ثبت trace، latency، توکن و هزینه
@@ -78,7 +79,7 @@ Realtime با `ws://localhost:5050/v1/realtime?model=gpt-realtime-2.1` و هما
 
 ## منابع رسمی قیمت seed
 
-قیمت‌ها snapshot تاریخ ۲۰۲۶-۰۷-۲۵ هستند و لینک مرجع در تک‌تک رکوردهای مدل ذخیره شده است. منابع اصلی شامل:
+قیمت‌های متنی snapshot تاریخ ۲۰۲۶-۰۷-۲۵ و قیمت‌های صوتی snapshot تاریخ ۲۰۲۶-۰۷-۲۶ هستند و لینک مرجع در تک‌تک رکوردهای مدل ذخیره شده است. منابع اصلی شامل:
 
 - [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
 - [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing)
@@ -86,6 +87,16 @@ Realtime با `ws://localhost:5050/v1/realtime?model=gpt-realtime-2.1` و هما
 - [DeepSeek models & pricing](https://api-docs.deepseek.com/quick_start/pricing)
 - [Moonshot/Kimi pricing](https://platform.moonshot.ai/docs/pricing/chat)
 - [Z.ai/GLM pricing](https://open.bigmodel.cn/pricing)
+- [Alibaba Model Studio pricing](https://www.alibabacloud.com/help/en/model-studio/model-pricing)
+- [ElevenLabs API pricing](https://elevenlabs.io/pricing/api)
+- [Deepgram pricing](https://deepgram.com/pricing)
+- [AssemblyAI pricing](https://www.assemblyai.com/pricing)
+- [Google Cloud Speech-to-Text pricing](https://cloud.google.com/speech-to-text/pricing)
+- [Google Cloud Text-to-Speech pricing](https://cloud.google.com/text-to-speech/pricing)
+- [Amazon Transcribe pricing](https://aws.amazon.com/transcribe/pricing/)
+- [Amazon Polly pricing](https://aws.amazon.com/polly/pricing/)
+- [Speechmatics pricing](https://www.speechmatics.com/pricing)
+- [Gladia transcription pricing](https://support.gladia.io/article/understanding-our-transcription-pricing-pv1atikh8y9c8sw7sudm3rcy)
 
 قیمت Providerها ممکن است بدون اطلاع تغییر کند؛ به همین دلیل پنل، تاریخ sync و لینک رسمی را نمایش می‌دهد و سوپرادمین می‌تواند هر قیمت را فوری ویرایش یا مدل را غیرفعال کند.
 

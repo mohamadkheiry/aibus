@@ -1,7 +1,8 @@
 export const API = import.meta.env.VITE_API_URL || ''
 
 export type User = { id:string; mobile:string; displayName:string; role:'SuperAdmin'|'User'; walletUsd:number; isSuspended:boolean; createdAtUtc:string; lastSeenAtUtc?:string }
-export type Model = { id:string; providerId:string; modelId:string; displayName:string; modality:string; inputPricePerMillionUsd:number; outputPricePerMillionUsd:number; cachedInputPricePerMillionUsd?:number; contextWindow:number; supportsStreaming:boolean; supportsWebSocket:boolean; priceSyncedAtUtc:string; pricingSourceUrl:string; testPayloadJson?:string; provider:{id:string;name:string;slug:string;logoUrl:string} }
+export type PricingComponent = { label:string; unit:string; priceUsd:number|null; note?:string|null }
+export type Model = { id:string; providerId:string; modelId:string; displayName:string; modality:string; serviceType:string; endpointPath:string; region:string; isPreview:boolean; pricingComponents:PricingComponent[]; pricingNotes?:string; inputPricePerMillionUsd:number; outputPricePerMillionUsd:number; cachedInputPricePerMillionUsd?:number; contextWindow:number; supportsStreaming:boolean; supportsWebSocket:boolean; priceSyncedAtUtc:string; pricingSourceUrl:string; testPayloadJson?:string; provider:{id:string;name:string;slug:string;logoUrl:string} }
 export type UserKey = { id:string;name:string;keyPrefix:string;isActive:boolean;requestLimit?:number;spendLimitUsd?:number;requestCount:number;spentUsd:number;accessMode:string;modelRules:string[];createdAtUtc:string;lastUsedAtUtc?:string }
 
 export const token = () => localStorage.getItem('aibus_token')
