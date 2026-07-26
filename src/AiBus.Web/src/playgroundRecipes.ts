@@ -9,10 +9,10 @@ export const CODE_LANGUAGES:Array<{id:CodeRecipeLanguage;label:string}>=[
 const apiKey='YOUR_AIBUS_API_KEY'
 const parse=(json:string)=>{try{return JSON.parse(json) as Record<string,unknown>}catch{return {}}}
 
-export function createCodeRecipe(language:CodeRecipeLanguage,endpoint:string,json:string,mode:PlaygroundMode='json'){
+export function createCodeRecipe(language:CodeRecipeLanguage,endpoint:string,json:string,mode:PlaygroundMode='json',serviceType=''){
   if(mode==='tts')return ttsRecipe(language,endpoint,json)
   if(mode==='stt')return sttRecipe(language,endpoint,json)
-  if(mode==='realtime')return realtimeRecipe(language,endpoint,json)
+  if(mode==='realtime')return realtimeRecipe(language,endpoint,json,serviceType)
   const shellJson=json.replace(/'/g,"'\\''")
   switch(language){
     case 'javascript':return `const payload = ${json};\n\nconst response = await fetch('${endpoint}', {\n  method: 'POST',\n  headers: {\n    'Authorization': 'Bearer ${apiKey}',\n    'Content-Type': 'application/json'\n  },\n  body: JSON.stringify(payload)\n});\n\nif (!response.ok) throw new Error(await response.text());\nconst contentType = response.headers.get('content-type') || '';\nconst data = contentType.includes('text/event-stream')\n  ? await response.text()\n  : await response.json();\nconsole.log(data);`
@@ -48,11 +48,16 @@ function sttRecipe(recipeLanguage:CodeRecipeLanguage,endpoint:string,json:string
   }
 }
 
-function realtimeRecipe(language:CodeRecipeLanguage,endpoint:string,json:string){
-  const model=String(parse(json).model||'MODEL_ID'), ws=endpoint.replace(/^http/,'ws')+(endpoint.includes('?')?'&':'?')+`model=${encodeURIComponent(model)}`
-  const event='{"type":"session.update","session":{"modalities":["audio","text"],"voice":"alloy","turn_detection":{"type":"server_vad"}}}'
+function realtimeRecipe(language:CodeRecipeLanguage,endpoint:string,json:string,serviceType:string){
+  const payload=parse(json),model=String(payload.model||'MODEL_ID'), ws=endpoint.replace(/^http/,'ws')+(endpoint.includes('?')?'&':'?')+`model=${encodeURIComponent(model)}`
+  const event=serviceType==='speech_to_text'
+    ? JSON.stringify({type:'session.update',session:{type:'transcription',audio:{input:{format:{type:'audio/pcm',rate:24000},transcription:{model,language:String(payload.language||'fa'),delay:String(payload.delay||'low')},turn_detection:null}}}})
+    : serviceType==='realtime_translation'
+      ? JSON.stringify({type:'session.update',session:{audio:{output:{language:String(payload.target_language||'fa')}}}})
+      : JSON.stringify({type:'session.update',session:{type:'realtime',instructions:String(payload.instructions||'به زبان فارسی پاسخ بده.'),output_modalities:['audio'],audio:{input:{format:{type:'audio/pcm',rate:24000},turn_detection:{type:'server_vad'}},output:{format:{type:'audio/pcm',rate:24000},voice:String(payload.voice||'alloy')}}}})
+  const appendEvent=serviceType==='realtime_translation'?'session.input_audio_buffer.append':'input_audio_buffer.append'
   switch(language){
-    case 'javascript':return `const socket = new WebSocket('${ws}', ['aibus-realtime', 'aibus-key.${apiKey}']);\nsocket.onopen = () => socket.send(${JSON.stringify(event)});\nsocket.onmessage = event => console.log(JSON.parse(event.data));\n// PCM16/24kHz mono chunks:\n// socket.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: base64Pcm16 }));`
+    case 'javascript':return `const socket = new WebSocket('${ws}', ['aibus-realtime', 'aibus-key.${apiKey}']);\nsocket.onopen = () => socket.send(${JSON.stringify(event)});\nsocket.onmessage = event => console.log(JSON.parse(event.data));\n// PCM16/24kHz mono chunks:\n// socket.send(JSON.stringify({ type: '${appendEvent}', audio: base64Pcm16 }));`
     case 'python':return `import asyncio, json, websockets\nasync def main():\n    async with websockets.connect('${ws}', subprotocols=['aibus-realtime', 'aibus-key.${apiKey}']) as socket:\n        await socket.send(${JSON.stringify(event)})\n        async for message in socket: print(json.loads(message))\nasyncio.run(main())`
     case 'csharp':return `using System.Net.WebSockets; using System.Text;\nusing var ws = new ClientWebSocket();\nws.Options.AddSubProtocol("aibus-realtime"); ws.Options.AddSubProtocol("aibus-key.${apiKey}");\nawait ws.ConnectAsync(new Uri("${ws}"), CancellationToken.None);\nvar data = Encoding.UTF8.GetBytes(${JSON.stringify(event)});\nawait ws.SendAsync(data, WebSocketMessageType.Text, true, CancellationToken.None);`
     case 'php':return `<?php\n// composer require ratchet/pawl\n// Connect to ${ws} with subprotocols:\n$protocols = ['aibus-realtime', 'aibus-key.${apiKey}'];\n// Send after connect:\n$sessionUpdate = ${JSON.stringify(event)};`

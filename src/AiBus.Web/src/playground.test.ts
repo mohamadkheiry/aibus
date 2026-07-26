@@ -46,4 +46,21 @@ describe('playground code recipes', () => {
     expect(realtime).toContain('aibus-key.YOUR_AIBUS_API_KEY')
     expect(realtime).not.toContain('api_key=')
   })
+
+  it('uses the GA realtime transcription event contract', () => {
+    const recipe = createCodeRecipe('javascript','https://aibus.00f.ir/v1/realtime',JSON.stringify({model:'gpt-realtime-whisper',language:'fa',delay:'low'}),'realtime','speech_to_text')
+    expect(recipe).toContain('transcription')
+    expect(recipe).toContain('audio/pcm')
+    expect(recipe).toContain('gpt-realtime-whisper')
+    expect(recipe).toContain("type: 'input_audio_buffer.append'")
+    expect(recipe).not.toContain('transcription_session.update')
+  })
+
+  it('uses the dedicated realtime translation event contract', () => {
+    const recipe = createCodeRecipe('javascript','https://aibus.00f.ir/v1/realtime',JSON.stringify({model:'gpt-realtime-translate',target_language:'fa'}),'realtime','realtime_translation')
+    expect(recipe).not.toContain('target_language')
+    expect(recipe).toContain('language')
+    expect(recipe).toContain("type: 'session.input_audio_buffer.append'")
+    expect(recipe).not.toContain('"type":"translation"')
+  })
 })
