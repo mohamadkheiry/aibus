@@ -95,7 +95,7 @@ function Landing({onLogin}:{onLogin:()=>void}){
 }
 
 function Login({onLogin,onBack}:{onLogin:(u:User,t:string)=>void;onBack:()=>void}){
-  const [mobile,setMobile]=useState('09015909044'),[code,setCode]=useState(''),[step,setStep]=useState<1|2>(1),[busy,setBusy]=useState(false),[debug,setDebug]=useState('')
+  const [mobile,setMobile]=useState(''),[code,setCode]=useState(''),[step,setStep]=useState<1|2>(1),[busy,setBusy]=useState(false),[debug,setDebug]=useState('')
   const submit=async(e:FormEvent)=>{e.preventDefault();setBusy(true);try{if(step===1){const r=await request<{debugCode?:string;message:string}>('/api/auth/request-otp',{method:'POST',body:JSON.stringify({mobile})});setDebug(r.debugCode||'');setStep(2);toast.success(r.message)}else{const r=await request<{token:string;user:User}>('/api/auth/verify-otp',{method:'POST',body:JSON.stringify({mobile,code})});onLogin(r.user,r.token)}}catch(e){toast.error((e as Error).message)}finally{setBusy(false)}}
   return <div className="login-page"><button className="login-back" onClick={onBack}><ArrowLeft/>بازگشت به صفحه اصلی</button><div className="login-orb orb-a"/><div className="login-orb orb-b"/><section className="login-story">
     <button className="logo-button" onClick={onBack}><Logo/></button><div className="hero-copy"><span className="eyebrow"><Zap/>یک API، تمام مدل‌ها</span><h1>مرکز فرمان<br/><em>هوش مصنوعی</em> شما</h1><p>مدل‌های برتر دنیا، مدیریت هزینه و گزارش‌های دقیق؛ همه در یک مسیر امن و یکپارچه.</p></div>
