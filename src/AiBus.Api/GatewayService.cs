@@ -24,11 +24,12 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         var credential = await db.ProviderCredentials.Where(x => x.ProviderId == model.ProviderId && x.IsActive).OrderByDescending(x => (double)x.RemainingBalanceUsd).FirstOrDefaultAsync(ct);
         if (credential is null) { context.Response.StatusCode = 503; return; }
 
-        // Transcription models configure their model inside session.update. Sending one as
-        // the realtime session model in the URL makes OpenAI reject the connection.
-        IReadOnlyDictionary<string, string>? realtimeQuery = model.ServiceType == "speech_to_text"
-            ? null
-            : new Dictionary<string, string> { ["model"] = model.ModelId };
+        // Transcription models configure their own model inside session.update, while the
+        // socket URL still requires a realtime host model. Billing remains tied to `model`.
+        IReadOnlyDictionary<string, string> realtimeQuery = new Dictionary<string, string>
+        {
+            ["model"] = model.ServiceType == "speech_to_text" ? "gpt-realtime-1.5" : model.ModelId
+        };
         var upstreamUrl = BuildUpstreamUri(model.Provider, model, true, realtimeQuery);
         using var upstream = new ClientWebSocket();
         ConfigureWebSocketAuthentication(upstream, model.Provider, secrets.Unprotect(credential.ProtectedApiKey));
