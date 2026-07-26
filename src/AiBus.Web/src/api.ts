@@ -20,6 +20,7 @@ export async function request<T=unknown>(path:string, options:RequestInit={}) : 
 const formatWithDotDecimal = (n:number, options:Intl.NumberFormatOptions) =>
   new Intl.NumberFormat('fa-IR',options).formatToParts(n).map(part=>part.type==='decimal'?'.':part.value).join('')
 export const money = (n:number, digits=2) => formatWithDotDecimal(n,{minimumFractionDigits:digits,maximumFractionDigits:digits})
+export const usd = (n:number, digits=2) => new Intl.NumberFormat('en-US-u-nu-latn',{minimumFractionDigits:digits,maximumFractionDigits:digits}).format(n)
 export const number = (n:number) => formatWithDotDecimal(n,{notation:n>999999?'compact':'standard',maximumFractionDigits:1})
 export const chartNumber = (n:number) => {
   const absolute = Math.abs(n)
