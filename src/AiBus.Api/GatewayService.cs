@@ -27,7 +27,6 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         var upstreamUrl = BuildUpstreamUri(model.Provider, model, true, new Dictionary<string, string> { ["model"] = model.ModelId });
         using var upstream = new ClientWebSocket();
         ConfigureWebSocketAuthentication(upstream, model.Provider, secrets.Unprotect(credential.ProtectedApiKey));
-        upstream.Options.SetRequestHeader("OpenAI-Beta", "realtime=v1");
         try { await upstream.ConnectAsync(upstreamUrl, ct); }
         catch (Exception ex) { credential.LastError = ex.Message[..Math.Min(500, ex.Message.Length)]; await db.SaveChangesAsync(ct); context.Response.StatusCode = 502; return; }
         var requestedProtocols = context.Request.Headers.SecWebSocketProtocol.ToString();
@@ -223,6 +222,86 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                 var cost = inputTokens / 1_000_000m * model.InputPricePerMillionUsd + outputTokens / 1_000_000m * model.OutputPricePerMillionUsd;
                 await Record(user, userKey, model, selected, inputTokens, outputTokens, cost, stopwatch.ElapsedMilliseconds, "success", context.TraceIdentifier, ct);
             }
+        }
+    }
+
+    public async Task ForwardJsonEndpoint(HttpContext context, CancellationToken ct)
+    {
+        var authenticated = await auth.Authenticate(context.Request, ct);
+        if (authenticated is null) { await WriteError(context, 401, "invalid_api_key", "کلید API نامعتبر یا غیرفعال است."); return; }
+        var (user, userKey) = authenticated.Value;
+
+        JsonDocument body;
+        try { body = await JsonDocument.ParseAsync(context.Request.Body, cancellationToken: ct); }
+        catch { await WriteError(context, 400, "invalid_request", "بدنه JSON معتبر نیست."); return; }
+        using (body)
+        {
+            var modelName = body.RootElement.TryGetProperty("model", out var modelProperty) ? modelProperty.GetString() : null;
+            if (string.IsNullOrWhiteSpace(modelName)) { await WriteError(context, 400, "model_required", "فیلد model الزامی است."); return; }
+            var model = await db.Models.Include(x => x.Provider).SingleOrDefaultAsync(x => x.ModelId == modelName && x.IsActive && x.Provider!.IsActive, ct);
+            if (model?.Provider is null) { await WriteError(context, 404, "model_not_found", "مدل فعال پیدا نشد."); return; }
+            if (!string.Equals(model.EndpointPath.TrimEnd('/'), context.Request.Path.Value?.TrimEnd('/'), StringComparison.OrdinalIgnoreCase))
+            { await WriteError(context, 400, "endpoint_mismatch", $"این مدل باید از مسیر {model.EndpointPath} فراخوانی شود."); return; }
+            if (!await CheckAccess(context, user, userKey, model, ct)) return;
+
+            var credentials = await ActiveCredentials(model.ProviderId, ct);
+            if (credentials.Count == 0) { await WriteError(context, 503, "provider_unavailable", "کلید فعالی برای ارائه‌دهنده تنظیم نشده است."); return; }
+            var stream = body.RootElement.TryGetProperty("stream", out var streamProperty) && streamProperty.ValueKind == JsonValueKind.True;
+            var started = Stopwatch.StartNew();
+            foreach (var credential in credentials)
+            {
+                try
+                {
+                    using var upstream = await SendJson(model, credential, body.RootElement, ct);
+                    if (!upstream.IsSuccessStatusCode)
+                    {
+                        var error = await upstream.Content.ReadAsStringAsync(ct);
+                        var credentialError = $"{(int)upstream.StatusCode}: {error}";
+                        credential.LastError = credentialError[..Math.Min(500, credentialError.Length)];
+                        if (upstream.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.PaymentRequired or HttpStatusCode.TooManyRequests) continue;
+                        await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct);
+                        context.Response.StatusCode = (int)upstream.StatusCode;
+                        context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json";
+                        await context.Response.WriteAsync(error, ct);
+                        return;
+                    }
+
+                    long inputTokens = 0, outputTokens = 0;
+                    context.Response.StatusCode = 200;
+                    context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? (stream ? "text/event-stream; charset=utf-8" : "application/json; charset=utf-8");
+                    if (stream)
+                    {
+                        context.Response.Headers.CacheControl = "no-cache";
+                        await using var source = await upstream.Content.ReadAsStreamAsync(ct);
+                        using var reader = new StreamReader(source);
+                        while (!reader.EndOfStream && !ct.IsCancellationRequested)
+                        {
+                            var line = await reader.ReadLineAsync(ct) ?? "";
+                            await context.Response.WriteAsync(line + "\n", ct);
+                            await context.Response.Body.FlushAsync(ct);
+                            if (line.StartsWith("data: ") && line[6..] != "[DONE]") ParseUsage(line[6..], ref inputTokens, ref outputTokens);
+                        }
+                    }
+                    else
+                    {
+                        var responseText = await upstream.Content.ReadAsStringAsync(ct);
+                        ParseUsage(responseText, ref inputTokens, ref outputTokens);
+                        await context.Response.WriteAsync(responseText, ct);
+                    }
+                    var cost = EstimateTokenCost(model, inputTokens, outputTokens);
+                    if (cost == 0 && model.ServiceType == "video_generation" && TryGetDecimal(body.RootElement, "seconds", out var seconds))
+                        cost = EstimateMediaCost(model, 0, seconds);
+                    await Record(user, userKey, model, credential, inputTokens, outputTokens, cost, started.ElapsedMilliseconds, "success", context.TraceIdentifier, CancellationToken.None);
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    credential.LastError = ex.Message[..Math.Min(500, ex.Message.Length)];
+                    logger.LogWarning(ex, "JSON provider key {CredentialId} failed", credential.Id);
+                }
+            }
+            await db.SaveChangesAsync(ct);
+            await WriteError(context, 503, "provider_unavailable", "همه مسیرهای ارائه‌دهنده ناموفق بودند.");
         }
     }
 
@@ -448,7 +527,11 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         try
         {
             using var doc = JsonDocument.Parse(json);
-            if (!doc.RootElement.TryGetProperty("usage", out var usage)) return;
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("usage", out var usage))
+            {
+                if (!root.TryGetProperty("response", out var response) || !response.TryGetProperty("usage", out usage)) return;
+            }
             if (protocol == "anthropic")
             {
                 if (usage.TryGetProperty("input_tokens", out var i)) input = i.GetInt64();
@@ -461,6 +544,14 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             }
         }
         catch { }
+    }
+
+    private static bool TryGetDecimal(JsonElement body, string propertyName, out decimal value)
+    {
+        value = 0;
+        if (!body.TryGetProperty(propertyName, out var property)) return false;
+        if (property.ValueKind == JsonValueKind.Number) return property.TryGetDecimal(out value);
+        return property.ValueKind == JsonValueKind.String && decimal.TryParse(property.GetString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value);
     }
 
     private static string ConvertToAnthropicRequest(JsonElement input, bool stream)

@@ -259,6 +259,11 @@ public static class Routes
     {
         app.MapGet("/v1/models", async (HttpRequest request, ApiKeyAuthenticator auth, AppDbContext db, CancellationToken ct) => { if (await auth.Authenticate(request, ct) is null) return Results.Json(new { error = new { message = "Invalid API key" } }, statusCode: 401); var items = await db.Models.Where(x => x.IsActive && x.Provider!.IsActive).Select(x => new { id = x.ModelId, @object = "model", created = new DateTimeOffset(x.PriceSyncedAtUtc).ToUnixTimeSeconds(), owned_by = x.Provider!.Slug }).ToListAsync(ct); return Results.Ok(new { @object = "list", data = items }); });
         app.MapPost("/v1/chat/completions", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardChat(ctx, ct)).DisableAntiforgery();
+        app.MapPost("/v1/responses", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardJsonEndpoint(ctx, ct)).DisableAntiforgery();
+        app.MapPost("/v1/embeddings", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardJsonEndpoint(ctx, ct)).DisableAntiforgery();
+        app.MapPost("/v1/moderations", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardJsonEndpoint(ctx, ct)).DisableAntiforgery();
+        app.MapPost("/v1/images/generations", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardJsonEndpoint(ctx, ct)).DisableAntiforgery();
+        app.MapPost("/v1/videos", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardJsonEndpoint(ctx, ct)).DisableAntiforgery();
         app.MapPost("/v1/audio/speech", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardSpeech(ctx, ct)).DisableAntiforgery();
         app.MapPost("/v1/audio/transcriptions", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardTranscription(ctx, ct)).DisableAntiforgery();
         app.Map("/v1/realtime", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardRealtime(ctx, ct));

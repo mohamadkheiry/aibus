@@ -131,6 +131,9 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
             Assert.Contains(models, x => x.GetProperty("serviceType").GetString() == "text_to_speech");
             Assert.Contains(models, x => x.GetProperty("serviceType").GetString() == "speech_to_speech" && x.GetProperty("supportsWebSocket").GetBoolean());
             Assert.Contains(models, x => x.GetProperty("serviceType").GetString() == "realtime_translation");
+            Assert.Contains(models, x => x.GetProperty("modelId").GetString() == "gpt-5.6-sol");
+            Assert.Contains(models, x => x.GetProperty("modelId").GetString() == "gpt-image-2" && x.GetProperty("endpointPath").GetString() == "/v1/images/generations");
+            Assert.Contains(models, x => x.GetProperty("modelId").GetString() == "text-embedding-3-small" && x.GetProperty("endpointPath").GetString() == "/v1/embeddings");
             Assert.Contains(models, x => x.GetProperty("pricingComponents").EnumerateArray().Any(p => p.GetProperty("unit").GetString() == "minute"));
             Assert.Contains(models, x => x.GetProperty("pricingComponents").EnumerateArray().Any(p => p.GetProperty("unit").GetString() == "million_audio_tokens"));
         }
@@ -150,6 +153,12 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
 
         var speech = await _client.PostAsJsonAsync("/v1/audio/speech", new { model = "tts-1", input = "hello", voice = "alloy" });
         Assert.Equal(HttpStatusCode.Unauthorized, speech.StatusCode);
+
+        foreach (var endpoint in new[] { "/v1/responses", "/v1/embeddings", "/v1/moderations", "/v1/images/generations", "/v1/videos" })
+        {
+            var specialized = await _client.PostAsJsonAsync(endpoint, new { model = "test-model", input = "hello" });
+            Assert.Equal(HttpStatusCode.Unauthorized, specialized.StatusCode);
+        }
 
         using var form = new MultipartFormDataContent();
         form.Add(new StringContent("whisper-1"), "model");

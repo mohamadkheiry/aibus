@@ -21,4 +21,11 @@ const formatWithDotDecimal = (n:number, options:Intl.NumberFormatOptions) =>
   new Intl.NumberFormat('fa-IR',options).formatToParts(n).map(part=>part.type==='decimal'?'.':part.value).join('')
 export const money = (n:number, digits=2) => formatWithDotDecimal(n,{minimumFractionDigits:digits,maximumFractionDigits:digits})
 export const number = (n:number) => formatWithDotDecimal(n,{notation:n>999999?'compact':'standard',maximumFractionDigits:1})
+export const chartNumber = (n:number) => {
+  const absolute = Math.abs(n)
+  if (absolute >= 1_000_000_000) return `${formatWithDotDecimal(n/1_000_000_000,{maximumFractionDigits:1})}B`
+  if (absolute >= 1_000_000) return `${formatWithDotDecimal(n/1_000_000,{maximumFractionDigits:1})}M`
+  if (absolute >= 1_000) return `${formatWithDotDecimal(n/1_000,{maximumFractionDigits:1})}K`
+  return formatWithDotDecimal(n,{maximumFractionDigits:1})
+}
 export const dateTime = (v:string|Date) => new Intl.DateTimeFormat('fa-IR-u-ca-persian',{dateStyle:'medium',timeStyle:'short'}).format(new Date(v))
