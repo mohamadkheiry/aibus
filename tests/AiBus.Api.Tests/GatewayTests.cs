@@ -147,6 +147,15 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
     {
         var response = await _client.PostAsJsonAsync("/v1/chat/completions", new { model = "gpt-5.6-luna", messages = new[] { new { role = "user", content = "hello" } } });
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+        var speech = await _client.PostAsJsonAsync("/v1/audio/speech", new { model = "tts-1", input = "hello", voice = "alloy" });
+        Assert.Equal(HttpStatusCode.Unauthorized, speech.StatusCode);
+
+        using var form = new MultipartFormDataContent();
+        form.Add(new StringContent("whisper-1"), "model");
+        form.Add(new ByteArrayContent([1, 2, 3, 4]), "file", "sample.wav");
+        var transcription = await _client.PostAsync("/v1/audio/transcriptions", form);
+        Assert.Equal(HttpStatusCode.Unauthorized, transcription.StatusCode);
     }
 
     [Fact]

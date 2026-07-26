@@ -12,6 +12,7 @@ import {
 } from 'recharts'
 import { API, dateTime, money, Model, number, request, User, UserKey } from './api'
 import { TicketsPage } from './Tickets'
+import { Playground as MediaPlayground } from './Playground'
 
 type Page = 'dashboard'|'models'|'keys'|'wallet'|'usage'|'tickets'|'admin-dashboard'|'providers'|'admin-models'|'users'|'admin-tickets'|'visits'|'settings'
 type IconType = typeof LayoutDashboard
@@ -159,7 +160,7 @@ function ModelsPage(){
     <div className="catalog-tools"><div className="search-box"><Search/><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="جست‌وجوی مدل، سرویس یا شرکت..."/></div><div className="provider-tabs"><button className={provider==='all'?'active':''} onClick={()=>setProvider('all')}>همه شرکت‌ها</button>{providers.map(p=><button key={p.slug} className={provider===p.slug?'active':''} onClick={()=>setProvider(p.slug)}><ProviderLogo name={p.name} url={p.logoUrl} className="tiny"/>{p.name}</button>)}</div></div>
     <div className="catalog-result"><span>{number(filtered.length)} سرویس</span><small>قیمت‌ها بدون تبدیل یا گردکردن، مطابق واحد اعلام‌شده توسط ارائه‌دهنده نمایش داده می‌شوند.</small></div>
     <div className="models-grid multimedia-grid">{filtered.map(m=>{const Icon=SERVICE_META[m.serviceType]?.icon||Bot;return <article className="model-card multimedia-card" key={m.id}><header><ProviderLogo name={m.provider.name} url={m.provider.logoUrl}/><div><span>{m.provider.name}</span><h3>{m.displayName}</h3><code dir="ltr">{m.modelId}</code></div><Badge tone={m.serviceType==='chat'?'mint':'violet'}><Icon/>{serviceLabel(m.serviceType)}</Badge></header><div className="pricing-components">{m.pricingComponents.map((price,i)=><div key={`${price.label}-${i}`} title={price.note||''}><span>{price.label}<small>{PRICE_UNIT_LABELS[price.unit]||price.unit}</small></span><strong dir="ltr">{priceText(price.priceUsd)}</strong></div>)}</div>{m.pricingNotes&&<p className="pricing-note"><AlertTriangle/>{m.pricingNotes}</p>}<div className="capabilities">{m.supportsStreaming&&<span><Activity/>Stream</span>}{m.supportsWebSocket&&<span><Zap/>WebSocket</span>}{m.isPreview&&<span><Sparkles/>Preview</span>}<span><Globe2/>{m.region==='international'?'بین‌المللی':m.region}</span></div><footer><a href={m.pricingSourceUrl} target="_blank" rel="noreferrer"><Globe2/>مرجع رسمی قیمت</a><button className="primary-btn compact" onClick={()=>setSelected(m)}><TestTube2/>آزمایش سرویس</button></footer></article>})}</div>{filtered.length===0&&<Empty text="سرویسی با این مشخصات پیدا نشد."/>}
-    {selected&&<Playground model={selected} close={()=>setSelected(null)}/>}</>
+    {selected&&(selected.serviceType==='chat'||selected.serviceType==='audio_understanding'?<JsonPlayground model={selected} close={()=>setSelected(null)}/>:<MediaPlayground model={selected} close={()=>setSelected(null)}/>)}</>
 }
 
 export type CodeRecipeLanguage='curl'|'javascript'|'python'|'csharp'|'php'|'go'
@@ -180,7 +181,7 @@ export function createCodeRecipe(language:CodeRecipeLanguage,endpoint:string,jso
   }
 }
 
-function Playground({model,close}:{model:Model;close:()=>void}){
+function JsonPlayground({model,close}:{model:Model;close:()=>void}){
   const initialJson=useMemo(()=>{const chatFallback={model:model.modelId,messages:[{role:'user',content:'در سه جمله کوتاه توضیح بده هوش مصنوعی چگونه بهره‌وری یک کسب‌وکار را افزایش می‌دهد.'}],stream:false};try{const payload=JSON.parse(model.testPayloadJson||'{}');if(model.serviceType==='chat'||model.serviceType==='audio_understanding')return JSON.stringify({...chatFallback,...payload,model:model.modelId,messages:Array.isArray(payload.messages)&&payload.messages.length?payload.messages:chatFallback.messages,stream:payload.stream??false},null,2);return JSON.stringify({...payload,model:model.modelId},null,2)}catch{return JSON.stringify(chatFallback,null,2)}},[model])
   const [keys,setKeys]=useState<UserKey[]>([]),[key,setKey]=useState(()=>sessionStorage.getItem('aibus_test_key')||''),[requestJson,setRequestJson]=useState(initialJson),[output,setOutput]=useState(''),[busy,setBusy]=useState(false),[language,setLanguage]=useState<CodeRecipeLanguage>('curl'),[resultMeta,setResultMeta]=useState<{status:number;latency:number}|null>(null)
   const endpoint=`${API||window.location.origin}${model.endpointPath||'/v1/chat/completions'}`

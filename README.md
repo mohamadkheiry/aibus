@@ -116,3 +116,15 @@ cd src/AiBus.Web
 npm audit --omit=dev
 npm run build
 ```
+
+## Multimedia gateway endpoints
+
+- Text to speech: `POST /v1/audio/speech` with a JSON body and a Bearer AiBus API key.
+- Speech to text: `POST /v1/audio/transcriptions` with `multipart/form-data`, an audio `file`, and a Bearer AiBus API key.
+- Live audio and realtime services: `WS /v1/realtime?model=MODEL_ID`.
+
+Browser WebSocket clients cannot set an `Authorization` header. They must send the
+subprotocols `aibus-realtime` and `aibus-key.YOUR_AIBUS_API_KEY`; the gateway accepts
+`aibus-realtime` and keeps the raw key out of the URL, access logs, and browser history.
+The dashboard laboratory generates ready-to-run cURL, JavaScript, Python, C#, PHP,
+and Go recipes for each supported transport.

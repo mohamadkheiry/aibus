@@ -127,6 +127,12 @@ public sealed class ApiKeyAuthenticator(AppDbContext db)
     {
         var raw = request.Headers.Authorization.ToString();
         raw = raw.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ? raw[7..] : request.Headers["X-API-Key"].ToString();
+        if (string.IsNullOrWhiteSpace(raw) && request.Headers.TryGetValue("Sec-WebSocket-Protocol", out var protocols))
+        {
+            const string keyPrefix = "aibus-key.";
+            raw = protocols.ToString().Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .FirstOrDefault(x => x.StartsWith(keyPrefix, StringComparison.Ordinal))?[keyPrefix.Length..] ?? "";
+        }
         if (string.IsNullOrWhiteSpace(raw)) return null;
         var hash = Hashing.Sha256(raw.Trim());
         var key = await db.UserApiKeys.Include(x => x.User).SingleOrDefaultAsync(x => x.KeyHash == hash, ct);

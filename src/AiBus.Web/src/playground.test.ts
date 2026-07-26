@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { createCodeRecipe, type CodeRecipeLanguage } from './App'
+import { createCodeRecipe, type CodeRecipeLanguage } from './playgroundRecipes'
 
 const endpoint = 'https://aibus.00f.ir/v1/chat/completions'
 const payload = JSON.stringify({
@@ -24,5 +24,26 @@ describe('playground code recipes', () => {
   it('generates stream-aware JavaScript and Python examples', () => {
     expect(createCodeRecipe('javascript', endpoint, payload)).toContain('text/event-stream')
     expect(createCodeRecipe('python', endpoint, payload)).toContain("payload.get('stream')")
+  })
+
+  it('generates playable text-to-speech examples', () => {
+    const speech = JSON.stringify({model:'tts-1',input:'سلام',voice:'alloy'})
+    expect(createCodeRecipe('curl','https://aibus.00f.ir/v1/audio/speech',speech,'tts')).toContain('--output speech.mp3')
+    expect(createCodeRecipe('javascript','https://aibus.00f.ir/v1/audio/speech',speech,'tts')).toContain('new Audio(url).play()')
+    expect(createCodeRecipe('python','https://aibus.00f.ir/v1/audio/speech',speech,'tts')).toContain("open('speech.mp3', 'wb')")
+  })
+
+  it('generates multipart speech-to-text examples', () => {
+    const transcription = JSON.stringify({model:'whisper-1',language:'fa'})
+    expect(createCodeRecipe('curl','https://aibus.00f.ir/v1/audio/transcriptions',transcription,'stt')).toContain("file=@audio.wav")
+    expect(createCodeRecipe('csharp','https://aibus.00f.ir/v1/audio/transcriptions',transcription,'stt')).toContain('MultipartFormDataContent')
+    expect(createCodeRecipe('go','https://aibus.00f.ir/v1/audio/transcriptions',transcription,'stt')).toContain('multipart.NewWriter')
+  })
+
+  it('uses secure WebSocket subprotocols without putting the key in the URL', () => {
+    const realtime = createCodeRecipe('javascript','https://aibus.00f.ir/v1/realtime',JSON.stringify({model:'gpt-realtime-2.1'}),'realtime')
+    expect(realtime).toContain("'aibus-realtime'")
+    expect(realtime).toContain('aibus-key.YOUR_AIBUS_API_KEY')
+    expect(realtime).not.toContain('api_key=')
   })
 })
