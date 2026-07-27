@@ -98,6 +98,7 @@ public sealed class UserApiKey
     [MaxLength(80)] public string Name { get; set; } = "کلید من";
     [MaxLength(128)] public string KeyHash { get; set; } = "";
     [MaxLength(16)] public string KeyPrefix { get; set; } = "";
+    public string? ProtectedApiKey { get; set; }
     public bool IsActive { get; set; } = true;
     public int? RequestLimit { get; set; }
     public decimal? SpendLimitUsd { get; set; }

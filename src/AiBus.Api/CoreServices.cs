@@ -121,7 +121,7 @@ public sealed class ZarinpalService(HttpClient http, SettingsService settings)
     }
 }
 
-public sealed class ApiKeyAuthenticator(AppDbContext db)
+public sealed class ApiKeyAuthenticator(AppDbContext db, SecretProtector secrets)
 {
     public async Task<(AppUser user, UserApiKey key)?> Authenticate(HttpRequest request, CancellationToken ct)
     {
@@ -134,9 +134,19 @@ public sealed class ApiKeyAuthenticator(AppDbContext db)
                 .FirstOrDefault(x => x.StartsWith(keyPrefix, StringComparison.Ordinal))?[keyPrefix.Length..] ?? "";
         }
         if (string.IsNullOrWhiteSpace(raw)) return null;
-        var hash = Hashing.Sha256(raw.Trim());
+        raw = raw.Trim();
+        var hash = Hashing.Sha256(raw);
         var key = await db.UserApiKeys.Include(x => x.User).SingleOrDefaultAsync(x => x.KeyHash == hash, ct);
         if (key?.User is null || !key.IsActive || key.User.IsSuspended) return null;
+        if (string.IsNullOrWhiteSpace(key.ProtectedApiKey))
+        {
+            var protectedApiKey = secrets.Protect(raw);
+            // Keep a concurrent rotation authoritative: backfill only while the same
+            // legacy hash is still current and no protected value has been written.
+            await db.UserApiKeys
+                .Where(x => x.Id == key.Id && x.KeyHash == hash && (x.ProtectedApiKey == null || x.ProtectedApiKey == ""))
+                .ExecuteUpdateAsync(update => update.SetProperty(x => x.ProtectedApiKey, protectedApiKey), ct);
+        }
         return (key.User, key);
     }
 }

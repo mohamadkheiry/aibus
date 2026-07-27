@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Data.Sqlite;
 using System.Data;
 using System.Text.Json;
 
@@ -45,6 +46,7 @@ public static class SeedData
             );
             CREATE INDEX IF NOT EXISTS "IX_TicketMessages_TicketId_CreatedAtUtc" ON "TicketMessages" ("TicketId", "CreatedAtUtc");
             """);
+        await EnsureUserApiKeyColumns(db);
         await EnsureModelCatalogColumns(db);
         if (!await db.Users.AnyAsync(x => x.Mobile == "09015909044"))
             db.Users.Add(new AppUser { Mobile = "09015909044", DisplayName = "سوپر ادمین", Role = Roles.SuperAdmin });
@@ -132,6 +134,37 @@ public static class SeedData
         await db.SaveChangesAsync();
         await EnsureModelCatalog(db);
         await db.SaveChangesAsync();
+    }
+
+    private static async Task EnsureUserApiKeyColumns(AppDbContext db)
+    {
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+        var hasProtectedApiKey = false;
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA table_info(\"UserApiKeys\")";
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync())
+            {
+                if (string.Equals(reader.GetString(1), nameof(UserApiKey.ProtectedApiKey), StringComparison.OrdinalIgnoreCase))
+                {
+                    hasProtectedApiKey = true;
+                    break;
+                }
+            }
+        }
+        if (hasProtectedApiKey) return;
+        await using var alter = connection.CreateCommand();
+        alter.CommandText = "ALTER TABLE \"UserApiKeys\" ADD COLUMN \"ProtectedApiKey\" TEXT NULL";
+        try
+        {
+            await alter.ExecuteNonQueryAsync();
+        }
+        catch (SqliteException ex) when (ex.SqliteErrorCode == 1 && ex.Message.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase))
+        {
+            // Another application instance completed the same idempotent startup migration.
+        }
     }
 
     private static async Task EnsureModelCatalogColumns(AppDbContext db)

@@ -74,18 +74,52 @@ public static class Routes
             return Results.Ok(models.Select(ModelView));
         });
 
-        api.MapGet("/keys", async (System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
+        api.MapGet("/keys", async (System.Security.Claims.ClaimsPrincipal p, AppDbContext db, SecretProtector secrets, CancellationToken ct) =>
         {
             var keys = await db.UserApiKeys.AsNoTracking().Where(x => x.UserId == p.UserId()).OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
-            return Results.Ok(keys.Select(x => new { x.Id, x.Name, x.KeyPrefix, x.IsActive, x.RequestLimit, x.SpendLimitUsd, x.RequestCount, x.SpentUsd, x.AccessMode, modelRules = JsonSerializer.Deserialize<string[]>(x.ModelRulesJson), x.CreatedAtUtc, x.LastUsedAtUtc }));
+            return Results.Ok(keys.Select(x => new { x.Id, x.Name, x.KeyPrefix, canReveal = RecoverApiKey(secrets, x) is not null, x.IsActive, x.RequestLimit, x.SpendLimitUsd, x.RequestCount, x.SpentUsd, x.AccessMode, modelRules = JsonSerializer.Deserialize<string[]>(x.ModelRulesJson) ?? [], x.CreatedAtUtc, x.LastUsedAtUtc }));
         });
-        api.MapPost("/keys", async (CreateUserKeyRequest req, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
+        api.MapPost("/keys", async (CreateUserKeyRequest req, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, SecretProtector secrets, HttpContext context, CancellationToken ct) =>
         {
             if (await db.UserApiKeys.CountAsync(x => x.UserId == p.UserId(), ct) >= 20) return Results.BadRequest(new { message = "حداکثر ۲۰ کلید مجاز است." });
             var raw = Hashing.RandomApiKey();
-            var key = new UserApiKey { UserId = p.UserId(), Name = req.Name, KeyHash = Hashing.Sha256(raw), KeyPrefix = raw[..12], RequestLimit = req.RequestLimit, SpendLimitUsd = req.SpendLimitUsd, AccessMode = ValidAccessMode(req.AccessMode), ModelRulesJson = JsonSerializer.Serialize(req.ModelRules ?? []) };
+            var key = new UserApiKey { UserId = p.UserId(), Name = req.Name, KeyHash = Hashing.Sha256(raw), KeyPrefix = raw[..12], ProtectedApiKey = secrets.Protect(raw), RequestLimit = req.RequestLimit, SpendLimitUsd = req.SpendLimitUsd, AccessMode = ValidAccessMode(req.AccessMode), ModelRulesJson = JsonSerializer.Serialize(req.ModelRules ?? []) };
             db.UserApiKeys.Add(key); await db.SaveChangesAsync(ct);
-            return Results.Ok(new { key.Id, apiKey = raw, key.KeyPrefix, message = "این کلید فقط یک‌بار نمایش داده می‌شود؛ همین حالا ذخیره کنید." });
+            DisableSecretResponseCaching(context.Response);
+            return Results.Ok(new { key.Id, apiKey = raw, key.KeyPrefix, message = "کلید با رمزنگاری امن ذخیره شد و بعداً نیز قابل مشاهده است." });
+        });
+        api.MapPost("/keys/{id:guid}/reveal", async (Guid id, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, SecretProtector secrets, HttpContext context, CancellationToken ct) =>
+        {
+            DisableSecretResponseCaching(context.Response);
+            var key = await db.UserApiKeys.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id && x.UserId == p.UserId(), ct);
+            if (key is null) return Results.NotFound();
+            if (string.IsNullOrWhiteSpace(key.ProtectedApiKey))
+                return Results.Conflict(new { code = "legacy_key_not_recoverable", message = "مقدار این کلید قدیمی ذخیره نشده است؛ برای مشاهده، ابتدا کلید را با مقدار جدید بچرخانید." });
+            var raw = RecoverApiKey(secrets, key);
+            if (raw is null)
+                return Results.Conflict(new { code = "key_not_recoverable", message = "بازیابی امن این کلید ممکن نیست؛ برای دریافت مقدار جدید، کلید را بچرخانید." });
+            return Results.Ok(new { key.Id, apiKey = raw, key.KeyPrefix });
+        });
+        api.MapPost("/keys/{id:guid}/rotate", async (Guid id, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, SecretProtector secrets, HttpContext context, CancellationToken ct) =>
+        {
+            DisableSecretResponseCaching(context.Response);
+            var key = await db.UserApiKeys.SingleOrDefaultAsync(x => x.Id == id && x.UserId == p.UserId(), ct);
+            if (key is null) return Results.NotFound();
+            var oldKeyPrefix = key.KeyPrefix;
+            var raw = Hashing.RandomApiKey();
+            key.KeyHash = Hashing.Sha256(raw);
+            key.KeyPrefix = raw[..12];
+            key.ProtectedApiKey = secrets.Protect(raw);
+            db.AuditLogs.Add(new AuditLog
+            {
+                ActorUserId = p.UserId(),
+                Action = "user_api_key.rotate",
+                EntityType = "user_api_key",
+                EntityId = key.Id.ToString(),
+                DetailsJson = JsonSerializer.Serialize(new { oldKeyPrefix, newKeyPrefix = key.KeyPrefix, rotatedAtUtc = DateTime.UtcNow })
+            });
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(new { key.Id, apiKey = raw, key.KeyPrefix, message = "کلید با موفقیت چرخانده شد؛ مقدار قبلی دیگر معتبر نیست." });
         });
         api.MapPut("/keys/{id:guid}", async (Guid id, UpdateUserKeyRequest req, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
         {
@@ -279,6 +313,18 @@ public static class Routes
     private static object TicketSummary(SupportTicket x, bool includeUser) => new { x.Id, x.ReferenceCode, x.Subject, x.Category, x.Priority, x.Status, x.CreatedAtUtc, x.UpdatedAtUtc, x.LastReplyAtUtc, x.ClosedAtUtc, messageCount = x.Messages.Count, lastMessage = x.Messages.OrderByDescending(m => m.CreatedAtUtc).Select(m => m.Body).FirstOrDefault(), user = includeUser && x.User is not null ? new { x.User.Id, x.User.DisplayName, x.User.Mobile } : null };
     private static object TicketDetails(SupportTicket x, bool includeUser) => new { x.Id, x.ReferenceCode, x.Subject, x.Category, x.Priority, x.Status, x.CreatedAtUtc, x.UpdatedAtUtc, x.LastReplyAtUtc, x.ClosedAtUtc, user = includeUser && x.User is not null ? new { x.User.Id, x.User.DisplayName, x.User.Mobile } : null, messages = x.Messages.OrderBy(m => m.CreatedAtUtc).Select(m => new { m.Id, m.IsStaff, m.Body, m.CreatedAtUtc }) };
     private static Dictionary<string, int> TicketCounts(IEnumerable<SupportTicket> tickets) => tickets.GroupBy(x => x.Status).ToDictionary(x => x.Key, x => x.Count());
+    private static string? RecoverApiKey(SecretProtector secrets, UserApiKey key)
+    {
+        if (string.IsNullOrWhiteSpace(key.ProtectedApiKey)) return null;
+        var raw = secrets.Unprotect(key.ProtectedApiKey);
+        return !string.IsNullOrWhiteSpace(raw) && Hashing.Sha256(raw) == key.KeyHash ? raw : null;
+    }
+    private static void DisableSecretResponseCaching(HttpResponse response)
+    {
+        response.Headers["Cache-Control"] = "no-store, no-cache, max-age=0";
+        response.Headers["Pragma"] = "no-cache";
+        response.Headers["Expires"] = "0";
+    }
     private static string ValidAccessMode(string value) => value is "allow" or "deny" ? value : "all";
     private static string? NormalizeMobile(string value) { var digits = new string(value.Where(char.IsDigit).ToArray()); if (digits.StartsWith("98") && digits.Length == 12) digits = "0" + digits[2..]; if (digits.Length == 10 && digits.StartsWith('9')) digits = "0" + digits; return digits.Length == 11 && digits.StartsWith("09") ? digits : null; }
     private static AiModel ToModel(ModelRequest r) { var m = new AiModel(); Apply(m, r); return m; }

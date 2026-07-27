@@ -267,6 +267,185 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
     }
 
     [Fact]
+    public async Task User_api_keys_can_be_revealed_backfilled_and_rotated_without_leaking_plaintext()
+    {
+        async Task<LoginResponse> LoginAs(string mobile)
+        {
+            var otpResponse = await _client.PostAsJsonAsync("/api/auth/request-otp", new { mobile });
+            otpResponse.EnsureSuccessStatusCode();
+            var otp = await otpResponse.Content.ReadFromJsonAsync<OtpResponse>();
+            using var loginRequest = new HttpRequestMessage(HttpMethod.Post, "/api/auth/verify-otp")
+            {
+                Content = JsonContent.Create(new { mobile, code = otp!.DebugCode })
+            };
+            var loginResponse = await _client.SendAsync(loginRequest);
+            loginResponse.EnsureSuccessStatusCode();
+            return (await loginResponse.Content.ReadFromJsonAsync<LoginResponse>())!;
+        }
+
+        var owner = await LoginAs("09124440001");
+        var otherUser = await LoginAs("09124440002");
+
+        using var createRequest = Authorized(HttpMethod.Post, "/api/keys", owner.Token, new
+        {
+            name = "کلید قابل نمایش",
+            requestLimit = 120,
+            spendLimitUsd = 9.75m,
+            accessMode = "all",
+            modelRules = Array.Empty<string>()
+        });
+        var createResponse = await _client.SendAsync(createRequest);
+        createResponse.EnsureSuccessStatusCode();
+        Assert.True(createResponse.Headers.CacheControl?.NoStore == true);
+        var created = await createResponse.Content.ReadFromJsonAsync<ApiKeySecretResponse>();
+        Assert.NotNull(created);
+        Assert.StartsWith("aibus_", created!.ApiKey);
+
+        using (var listRequest = Authorized(HttpMethod.Get, "/api/keys", owner.Token))
+        {
+            var listResponse = await _client.SendAsync(listRequest);
+            listResponse.EnsureSuccessStatusCode();
+            var json = await listResponse.Content.ReadAsStringAsync();
+            Assert.DoesNotContain(created.ApiKey, json);
+            using var list = JsonDocument.Parse(json);
+            var listed = Assert.Single(list.RootElement.EnumerateArray(), x => x.GetProperty("id").GetGuid() == created.Id);
+            Assert.True(listed.GetProperty("canReveal").GetBoolean());
+            Assert.Equal(created.KeyPrefix, listed.GetProperty("keyPrefix").GetString());
+        }
+
+        using (var revealRequest = Authorized(HttpMethod.Post, $"/api/keys/{created.Id}/reveal", owner.Token))
+        {
+            var revealResponse = await _client.SendAsync(revealRequest);
+            revealResponse.EnsureSuccessStatusCode();
+            Assert.True(revealResponse.Headers.CacheControl?.NoStore == true);
+            var revealed = await revealResponse.Content.ReadFromJsonAsync<ApiKeySecretResponse>();
+            Assert.Equal(created.ApiKey, revealed?.ApiKey);
+        }
+
+        const string legacyRaw = "aibus_legacy_key_that_remains_valid_during_secure_backfill";
+        Guid legacyId;
+        Guid corruptId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var secrets = scope.ServiceProvider.GetRequiredService<SecretProtector>();
+            var user = await db.Users.SingleAsync(x => x.Mobile == "09124440001");
+            var legacy = new UserApiKey
+            {
+                UserId = user.Id,
+                Name = "کلید قدیمی",
+                KeyHash = Hashing.Sha256(legacyRaw),
+                KeyPrefix = legacyRaw[..12],
+                ProtectedApiKey = null,
+                RequestLimit = 42,
+                SpendLimitUsd = 12.34m,
+                RequestCount = 7,
+                SpentUsd = 0.123m,
+                AccessMode = "allow",
+                ModelRulesJson = "[\"gpt-5.6-luna\"]"
+            };
+            const string corruptRaw = "aibus_corrupt_key_value_for_integrity_test";
+            var corrupt = new UserApiKey
+            {
+                UserId = user.Id,
+                Name = "کلید ناسازگار",
+                KeyHash = Hashing.Sha256(corruptRaw),
+                KeyPrefix = corruptRaw[..12],
+                ProtectedApiKey = secrets.Protect("aibus_a_different_secret")
+            };
+            db.UserApiKeys.AddRange(legacy, corrupt);
+            await db.SaveChangesAsync();
+            legacyId = legacy.Id;
+            corruptId = corrupt.Id;
+        }
+
+        using (var legacyRevealRequest = Authorized(HttpMethod.Post, $"/api/keys/{legacyId}/reveal", owner.Token))
+        {
+            var legacyRevealResponse = await _client.SendAsync(legacyRevealRequest);
+            Assert.Equal(HttpStatusCode.Conflict, legacyRevealResponse.StatusCode);
+            Assert.True(legacyRevealResponse.Headers.CacheControl?.NoStore == true);
+        }
+        using (var otherRevealRequest = Authorized(HttpMethod.Post, $"/api/keys/{legacyId}/reveal", otherUser.Token))
+            Assert.Equal(HttpStatusCode.NotFound, (await _client.SendAsync(otherRevealRequest)).StatusCode);
+        using (var otherRotateRequest = Authorized(HttpMethod.Post, $"/api/keys/{legacyId}/rotate", otherUser.Token))
+            Assert.Equal(HttpStatusCode.NotFound, (await _client.SendAsync(otherRotateRequest)).StatusCode);
+
+        using (var corruptListRequest = Authorized(HttpMethod.Get, "/api/keys", owner.Token))
+        {
+            var corruptListResponse = await _client.SendAsync(corruptListRequest);
+            using var list = JsonDocument.Parse(await corruptListResponse.Content.ReadAsStringAsync());
+            var corrupt = Assert.Single(list.RootElement.EnumerateArray(), x => x.GetProperty("id").GetGuid() == corruptId);
+            Assert.False(corrupt.GetProperty("canReveal").GetBoolean());
+        }
+        using (var corruptRevealRequest = Authorized(HttpMethod.Post, $"/api/keys/{corruptId}/reveal", owner.Token))
+            Assert.Equal(HttpStatusCode.Conflict, (await _client.SendAsync(corruptRevealRequest)).StatusCode);
+
+        using (var authenticateLegacy = new HttpRequestMessage(HttpMethod.Get, "/v1/models"))
+        {
+            authenticateLegacy.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", legacyRaw);
+            (await _client.SendAsync(authenticateLegacy)).EnsureSuccessStatusCode();
+        }
+        using (var revealBackfilledRequest = Authorized(HttpMethod.Post, $"/api/keys/{legacyId}/reveal", owner.Token))
+        {
+            var revealBackfilledResponse = await _client.SendAsync(revealBackfilledRequest);
+            revealBackfilledResponse.EnsureSuccessStatusCode();
+            var backfilled = await revealBackfilledResponse.Content.ReadFromJsonAsync<ApiKeySecretResponse>();
+            Assert.Equal(legacyRaw, backfilled?.ApiKey);
+        }
+
+        ApiKeySecretResponse rotated;
+        using (var rotateRequest = Authorized(HttpMethod.Post, $"/api/keys/{legacyId}/rotate", owner.Token))
+        {
+            var rotateResponse = await _client.SendAsync(rotateRequest);
+            rotateResponse.EnsureSuccessStatusCode();
+            Assert.True(rotateResponse.Headers.CacheControl?.NoStore == true);
+            rotated = (await rotateResponse.Content.ReadFromJsonAsync<ApiKeySecretResponse>())!;
+            Assert.NotEqual(legacyRaw, rotated.ApiKey);
+            Assert.Equal(legacyId, rotated.Id);
+        }
+
+        using (var oldKeyRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models"))
+        {
+            oldKeyRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", legacyRaw);
+            Assert.Equal(HttpStatusCode.Unauthorized, (await _client.SendAsync(oldKeyRequest)).StatusCode);
+        }
+        using (var newKeyRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models"))
+        {
+            newKeyRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", rotated.ApiKey);
+            (await _client.SendAsync(newKeyRequest)).EnsureSuccessStatusCode();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var secrets = scope.ServiceProvider.GetRequiredService<SecretProtector>();
+            var key = await db.UserApiKeys.AsNoTracking().SingleAsync(x => x.Id == legacyId);
+            Assert.Equal(42, key.RequestLimit);
+            Assert.Equal(12.34m, key.SpendLimitUsd);
+            Assert.Equal(7, key.RequestCount);
+            Assert.Equal(0.123m, key.SpentUsd);
+            Assert.Equal("allow", key.AccessMode);
+            Assert.Equal("[\"gpt-5.6-luna\"]", key.ModelRulesJson);
+            Assert.Equal(rotated.ApiKey, secrets.Unprotect(key.ProtectedApiKey!));
+            Assert.Equal(Hashing.Sha256(rotated.ApiKey), key.KeyHash);
+
+            var audit = await db.AuditLogs.AsNoTracking().SingleAsync(x => x.Action == "user_api_key.rotate" && x.EntityId == legacyId.ToString());
+            Assert.Contains(legacyRaw[..12], audit.DetailsJson);
+            Assert.Contains(rotated.KeyPrefix, audit.DetailsJson);
+            Assert.DoesNotContain(legacyRaw, audit.DetailsJson);
+            Assert.DoesNotContain(rotated.ApiKey, audit.DetailsJson);
+        }
+
+        using (var finalListRequest = Authorized(HttpMethod.Get, "/api/keys", owner.Token))
+        {
+            var finalListResponse = await _client.SendAsync(finalListRequest);
+            var json = await finalListResponse.Content.ReadAsStringAsync();
+            Assert.DoesNotContain(legacyRaw, json);
+            Assert.DoesNotContain(rotated.ApiKey, json);
+        }
+    }
+
+    [Fact]
     public void Hashing_is_stable_and_keys_are_prefixed()
     {
         Assert.Equal(Hashing.Sha256("secret"), Hashing.Sha256("secret"));
@@ -277,6 +456,7 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
     private sealed record OtpResponse(string? DebugCode);
     private sealed record LoginResponse(string Token, LoginUser User);
     private sealed record LoginUser(string Id, string Role);
+    private sealed record ApiKeySecretResponse(Guid Id, string ApiKey, string KeyPrefix);
     private static HttpRequestMessage Authorized(HttpMethod method, string path, string token, object? body = null)
     {
         var request = new HttpRequestMessage(method, path);
