@@ -33,7 +33,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         };
         var upstreamUrl = BuildUpstreamUri(model.Provider, model, true, realtimeQuery);
         using var upstream = new ClientWebSocket();
-        ConfigureWebSocketAuthentication(upstream, model.Provider, secrets.Unprotect(credential.ProtectedApiKey));
+        ConfigureWebSocketAuthentication(upstream, model.Provider, model, secrets.Unprotect(credential.ProtectedApiKey));
         try { await upstream.ConnectAsync(upstreamUrl, ct); }
         catch (Exception ex) { credential.LastError = ex.Message[..Math.Min(500, ex.Message.Length)]; await db.SaveChangesAsync(ct); context.Response.StatusCode = 502; return; }
         var requestedProtocols = context.Request.Headers.SecWebSocketProtocol.ToString();
@@ -328,7 +328,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
     private async Task<HttpResponseMessage> SendJson(AiModel model, ProviderCredential credential, JsonElement body, CancellationToken ct)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, BuildUpstreamUri(model.Provider!, model, false, MediaQuery(model, body)));
-        ConfigureAuthentication(request, model.Provider!, secrets.Unprotect(credential.ProtectedApiKey));
+        ConfigureAuthentication(request, model.Provider!, model, secrets.Unprotect(credential.ProtectedApiKey));
         var payload = body.GetRawText();
         if (model.Provider!.Protocol == "elevenlabs" && body.TryGetProperty("input", out var input))
             payload = JsonSerializer.Serialize(new { text = input.GetString(), model_id = model.ModelId });
@@ -343,7 +343,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         var query = new Dictionary<string, string>();
         if (model.Provider!.Protocol == "deepgram") query["model"] = model.ModelId;
         var request = new HttpRequestMessage(HttpMethod.Post, BuildUpstreamUri(model.Provider, model, false, query));
-        ConfigureAuthentication(request, model.Provider, secrets.Unprotect(credential.ProtectedApiKey));
+        ConfigureAuthentication(request, model.Provider, model, secrets.Unprotect(credential.ProtectedApiKey));
         if (model.Provider.Protocol == "deepgram")
         {
             request.Content = new ByteArrayContent(audio);
@@ -372,8 +372,12 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
 
     private static Uri BuildUpstreamUri(AiProvider provider, AiModel model, bool webSocket, IReadOnlyDictionary<string, string>? query = null)
     {
-        var baseUri = new Uri(provider.BaseUrl);
-        var path = model.EndpointPath.StartsWith('/') ? model.EndpointPath : "/" + model.EndpointPath;
+        var baseUri = new Uri(string.IsNullOrWhiteSpace(model.UpstreamBaseUrl) ? provider.BaseUrl : model.UpstreamBaseUrl);
+        var upstreamPath = string.IsNullOrWhiteSpace(model.UpstreamPath) ? model.EndpointPath : model.UpstreamPath;
+        var path = upstreamPath.StartsWith('/') ? upstreamPath : "/" + upstreamPath;
+        var basePath = baseUri.AbsolutePath.TrimEnd('/');
+        if (basePath.Length > 0 && !path.Equals(basePath, StringComparison.OrdinalIgnoreCase) && !path.StartsWith(basePath + "/", StringComparison.OrdinalIgnoreCase))
+            path = basePath + "/" + path.TrimStart('/');
         if (provider.Protocol == "elevenlabs" && model.ServiceType == "text_to_speech" && path.TrimEnd('/').EndsWith("text-to-speech", StringComparison.OrdinalIgnoreCase))
             path = path.TrimEnd('/') + "/JBFqnCBsd6RMkjVDRZzb";
         var builder = new UriBuilder(baseUri) { Path = path, Query = "" };
@@ -383,8 +387,13 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         return builder.Uri;
     }
 
-    private static void ConfigureAuthentication(HttpRequestMessage request, AiProvider provider, string apiKey)
+    private static void ConfigureAuthentication(HttpRequestMessage request, AiProvider provider, AiModel model, string apiKey)
     {
+        if (provider.Slug == "gemini" && model.UpstreamPath.StartsWith("/v1beta/", StringComparison.OrdinalIgnoreCase))
+        {
+            request.Headers.TryAddWithoutValidation("x-goog-api-key", apiKey);
+            return;
+        }
         switch (provider.Protocol)
         {
             case "elevenlabs": request.Headers.TryAddWithoutValidation("xi-api-key", apiKey); break;
@@ -394,8 +403,13 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         }
     }
 
-    private static void ConfigureWebSocketAuthentication(ClientWebSocket socket, AiProvider provider, string apiKey)
+    private static void ConfigureWebSocketAuthentication(ClientWebSocket socket, AiProvider provider, AiModel model, string apiKey)
     {
+        if (provider.Slug == "gemini" && model.UpstreamPath.StartsWith("/v1beta/", StringComparison.OrdinalIgnoreCase))
+        {
+            socket.Options.SetRequestHeader("x-goog-api-key", apiKey);
+            return;
+        }
         switch (provider.Protocol)
         {
             case "elevenlabs": socket.Options.SetRequestHeader("xi-api-key", apiKey); break;

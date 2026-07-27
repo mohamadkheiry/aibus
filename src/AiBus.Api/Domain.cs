@@ -72,6 +72,8 @@ public sealed class AiModel
     [MaxLength(40)] public string Modality { get; set; } = "text";
     [MaxLength(50)] public string ServiceType { get; set; } = "chat";
     [MaxLength(200)] public string EndpointPath { get; set; } = "/v1/chat/completions";
+    [MaxLength(500)] public string UpstreamBaseUrl { get; set; } = "";
+    [MaxLength(500)] public string UpstreamPath { get; set; } = "";
     [MaxLength(80)] public string Region { get; set; } = "global";
     public bool IsPreview { get; set; }
     public string PricingDetailsJson { get; set; } = "[]";

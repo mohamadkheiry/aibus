@@ -6,7 +6,7 @@
 
 - ورود بدون رمز با موبایل و OTP، با شماره `09015909044` به‌عنوان سوپرادمین اولیه
 - Gateway سازگار با OpenAI برای `chat/completions`، حالت SSE Stream و WebSocket Realtime
-- کاتالوگ ۱۳۹ سرویس از ۱۷ ارائه‌دهنده شامل OpenAI، Gemini، Anthropic، DeepSeek، Kimi، GLM، xAI، Mistral، Qwen، Cohere، ElevenLabs، Deepgram، AssemblyAI، Google Cloud Speech، AWS، Speechmatics و Gladia
+- کاتالوگ بیش از ۳۲۰ سرویس فعال از ۱۷ ارائه‌دهنده شامل OpenAI، Gemini، Anthropic، DeepSeek، Kimi، GLM، xAI، Mistral، Qwen، Cohere، ElevenLabs، Deepgram، AssemblyAI، Google Cloud Speech، AWS، Speechmatics و Gladia
 - چند API key برای هر Provider، failover، موجودی اولیه، باقی‌مانده و هشدار کمبود اعتبار
 - قیمت چندواحدی متن و صوت شامل توکن متن/صوت/تصویر، دقیقه، ساعت، ثانیه، کاراکتر، پیام و صدا، همراه لینک رسمی منبع و تاریخ snapshot
 - سرویس‌های تبدیل صوت‌به‌متن، متن‌به‌صوت، صوت‌به‌صوت، Live/Realtime، ترجمه هم‌زمان، دوبله، طراحی و شبیه‌سازی صدا
@@ -79,14 +79,14 @@ Realtime با `ws://localhost:5050/v1/realtime?model=gpt-realtime-2.1` و هما
 
 ## منابع رسمی قیمت seed
 
-قیمت‌های متنی snapshot تاریخ ۲۰۲۶-۰۷-۲۵ و قیمت‌های صوتی snapshot تاریخ ۲۰۲۶-۰۷-۲۶ هستند و لینک مرجع در تک‌تک رکوردهای مدل ذخیره شده است. منابع اصلی شامل:
+کاتالوگ و قیمت‌ها در snapshot تاریخ ۲۰۲۶-۰۷-۲۷ با اسناد رسمی هر ارائه‌دهنده تطبیق داده شده‌اند و لینک مرجع در تک‌تک رکوردهای مدل ذخیره شده است. فهرست کامل منابع و قواعد همگام‌سازی در [MODEL_CATALOG.md](MODEL_CATALOG.md) قرار دارد. منابع اصلی شامل:
 
 - [OpenAI API pricing](https://developers.openai.com/api/docs/pricing)
 - [Gemini API pricing](https://ai.google.dev/gemini-api/docs/pricing)
 - [Claude API pricing](https://platform.claude.com/docs/en/about-claude/pricing)
 - [DeepSeek models & pricing](https://api-docs.deepseek.com/quick_start/pricing)
-- [Moonshot/Kimi pricing](https://platform.moonshot.ai/docs/pricing/chat)
-- [Z.ai/GLM pricing](https://open.bigmodel.cn/pricing)
+- [Moonshot/Kimi models](https://platform.kimi.ai/docs/models)
+- [Z.ai/GLM pricing](https://docs.z.ai/guides/overview/pricing)
 - [Alibaba Model Studio pricing](https://www.alibabacloud.com/help/en/model-studio/model-pricing)
 - [ElevenLabs API pricing](https://elevenlabs.io/pricing/api)
 - [Deepgram pricing](https://deepgram.com/pricing)

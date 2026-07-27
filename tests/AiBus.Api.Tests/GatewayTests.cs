@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace AiBus.Api.Tests;
@@ -18,6 +19,7 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
+        builder.ConfigureLogging(logging => logging.ClearProviders());
         builder.ConfigureServices(services =>
         {
             services.RemoveAll<DbContextOptions<AppDbContext>>();
@@ -36,6 +38,39 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
 public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestAppFactory>
 {
     private readonly HttpClient _client = factory.CreateClient();
+
+    [Fact]
+    public async Task Catalog_snapshot_preserves_administrator_overrides_after_restart()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"aibus-catalog-{Guid.NewGuid():N}.db");
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite($"Data Source={dbPath}").Options;
+        try
+        {
+            await using (var db = new AppDbContext(options))
+            {
+                await SeedData.Initialize(db);
+                var model = await db.Models.SingleAsync(x => x.ModelId == "gemini-3.1-flash-image");
+                model.OutputPricePerMillionUsd = 999m;
+                model.PricingNotes = "administrator override";
+                await db.SaveChangesAsync();
+            }
+
+            await using (var restarted = new AppDbContext(options))
+            {
+                await SeedData.Initialize(restarted);
+                var model = await restarted.Models.AsNoTracking().SingleAsync(x => x.ModelId == "gemini-3.1-flash-image");
+                Assert.Equal(999m, model.OutputPricePerMillionUsd);
+                Assert.Equal("administrator override", model.PricingNotes);
+                Assert.Equal("https://generativelanguage.googleapis.com", model.UpstreamBaseUrl);
+                Assert.StartsWith("/v1beta/", model.UpstreamPath);
+            }
+        }
+        finally
+        {
+            foreach (var suffix in new[] { "", "-wal", "-shm" })
+                try { File.Delete(dbPath + suffix); } catch (IOException) { /* SQLite can release WAL shortly after disposal. */ }
+        }
+    }
 
     [Fact]
     public async Task Health_endpoint_is_ready()
@@ -126,16 +161,36 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
             catalogResponse.EnsureSuccessStatusCode();
             using var catalog = JsonDocument.Parse(await catalogResponse.Content.ReadAsStringAsync());
             var models = catalog.RootElement.EnumerateArray().ToArray();
-            Assert.True(models.Length >= 90, $"Expected the full AI catalog, received {models.Length} services.");
+            Assert.True(models.Length >= 300, $"Expected the full vendor-verified AI catalog, received {models.Length} active services.");
+            Assert.True(models.Select(x => x.GetProperty("provider").GetProperty("slug").GetString()).Distinct().Count() >= 17);
             Assert.Contains(models, x => x.GetProperty("serviceType").GetString() == "speech_to_text");
             Assert.Contains(models, x => x.GetProperty("serviceType").GetString() == "text_to_speech");
             Assert.Contains(models, x => x.GetProperty("serviceType").GetString() == "speech_to_speech" && x.GetProperty("supportsWebSocket").GetBoolean());
             Assert.Contains(models, x => x.GetProperty("serviceType").GetString() == "realtime_translation");
             Assert.Contains(models, x => x.GetProperty("modelId").GetString() == "gpt-5.6-sol");
+            Assert.Contains(models, x => x.GetProperty("modelId").GetString() == "gemini-3.6-flash");
+            Assert.Contains(models, x => x.GetProperty("modelId").GetString() == "claude-fable-5");
+            Assert.Contains(models, x => x.GetProperty("modelId").GetString() == "qwen3.7-max");
+            Assert.Contains(models, x => x.GetProperty("modelId").GetString() == "universal-3-5-pro");
             Assert.Contains(models, x => x.GetProperty("modelId").GetString() == "gpt-image-2" && x.GetProperty("endpointPath").GetString() == "/v1/images/generations");
             Assert.Contains(models, x => x.GetProperty("modelId").GetString() == "text-embedding-3-small" && x.GetProperty("endpointPath").GetString() == "/v1/embeddings");
             Assert.Contains(models, x => x.GetProperty("pricingComponents").EnumerateArray().Any(p => p.GetProperty("unit").GetString() == "minute"));
             Assert.Contains(models, x => x.GetProperty("pricingComponents").EnumerateArray().Any(p => p.GetProperty("unit").GetString() == "million_audio_tokens"));
+            Assert.DoesNotContain(models, x => x.GetProperty("modelId").GetString() is "gpt-image-1.5" or "sora-2" or "eleven_turbo_v2_5");
+            var glm52 = Assert.Single(models, x => x.GetProperty("modelId").GetString() == "glm-5.2");
+            Assert.Equal(1.4m, glm52.GetProperty("inputPricePerMillionUsd").GetDecimal());
+            Assert.Equal(4.4m, glm52.GetProperty("outputPricePerMillionUsd").GetDecimal());
+            Assert.Equal(200000, glm52.GetProperty("contextWindow").GetInt32());
+            var nativeGemini = Assert.Single(models, x => x.GetProperty("modelId").GetString() == "gemini-3.1-flash-image");
+            Assert.Equal("/v1/images/generations", nativeGemini.GetProperty("endpointPath").GetString());
+            Assert.Equal("https://generativelanguage.googleapis.com", nativeGemini.GetProperty("upstreamBaseUrl").GetString());
+            Assert.StartsWith("/v1beta/", nativeGemini.GetProperty("upstreamPath").GetString());
+            Assert.All(models, model =>
+            {
+                Assert.StartsWith("https://", model.GetProperty("pricingSourceUrl").GetString());
+                Assert.True(model.GetProperty("inputPricePerMillionUsd").GetDecimal() >= 0);
+                Assert.True(model.GetProperty("outputPricePerMillionUsd").GetDecimal() >= 0);
+            });
         }
 
         using var gatewayRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions");
