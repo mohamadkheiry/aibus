@@ -222,15 +222,71 @@ public static class Routes
         admin.MapGet("/settings", async (SettingsService s) => Results.Ok(new { dollarRateIrr = long.Parse(await s.Get("currency.usd_irr", "850000")), feePercent = decimal.Parse(await s.Get("billing.fee_percent", "10"), CultureInfo.InvariantCulture), smsApiKey = await s.Get("sms.api_key"), smsTemplateId = int.Parse(await s.Get("sms.template_id", "176898")), zarinpalMerchantId = await s.Get("zarinpal.merchant_id"), paymentCallbackUrl = await s.Get("payment.callback_url", "http://localhost:5050/api/wallet/callback") }));
         admin.MapPut("/settings", async (UpdateSettingsRequest req, SettingsService s) => { await s.Set("currency.usd_irr", req.DollarRateIrr.ToString(CultureInfo.InvariantCulture)); await s.Set("billing.fee_percent", req.FeePercent.ToString(CultureInfo.InvariantCulture)); await s.Set("sms.api_key", req.SmsApiKey, true); await s.Set("sms.template_id", req.SmsTemplateId.ToString()); await s.Set("zarinpal.merchant_id", req.ZarinpalMerchantId, true); await s.Set("payment.callback_url", req.PaymentCallbackUrl); return Results.NoContent(); });
 
-        admin.MapGet("/providers", async (AppDbContext db, SecretProtector secrets, CancellationToken ct) => Results.Ok((await db.Providers.AsNoTracking().Include(x => x.Credentials).Include(x => x.Models).OrderBy(x => x.Name).ToListAsync(ct)).Select(x => new { x.Id, x.Name, x.Slug, x.LogoUrl, x.BaseUrl, x.PricingUrl, x.Protocol, x.IsActive, modelCount = x.Models.Count, credentials = x.Credentials.Select(c => new { c.Id, c.Label, apiKey = secrets.Unprotect(c.ProtectedApiKey), c.IsActive, c.InitialBalanceUsd, c.RemainingBalanceUsd, c.AlertThresholdUsd, c.RequestCount, c.LastUsedAtUtc, c.LastError, c.LastErrorCode, c.LastErrorAtUtc, isQuotaExhausted = c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode, isLow = c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode || c.InitialBalanceUsd > 0 && c.RemainingBalanceUsd <= c.AlertThresholdUsd }) })));
+        admin.MapGet("/providers", async (AppDbContext db, SecretProtector secrets, CancellationToken ct) => Results.Ok((await db.Providers.AsNoTracking().Include(x => x.Credentials).Include(x => x.Models).OrderBy(x => x.Name).ToListAsync(ct)).Select(x => new { x.Id, x.Name, x.Slug, x.LogoUrl, x.BaseUrl, x.PricingUrl, x.Protocol, x.IsActive, modelCount = x.Models.Count, credentials = x.Credentials.Where(c => !string.IsNullOrEmpty(c.ProtectedApiKey)).Select(c => new { c.Id, c.Label, apiKey = secrets.Unprotect(c.ProtectedApiKey), c.IsActive, c.InitialBalanceUsd, c.RemainingBalanceUsd, c.AlertThresholdUsd, c.RequestCount, c.LastUsedAtUtc, c.LastError, c.LastErrorCode, c.LastErrorAtUtc, isQuotaExhausted = c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode, isLow = c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode || c.InitialBalanceUsd > 0 && c.RemainingBalanceUsd <= c.AlertThresholdUsd }) })));
         admin.MapPost("/providers", async (ProviderRequest req, AppDbContext db, CancellationToken ct) => { var p = new AiProvider { Name = req.Name, Slug = req.Slug, LogoUrl = req.LogoUrl, BaseUrl = req.BaseUrl, PricingUrl = req.PricingUrl, Protocol = req.Protocol, IsActive = req.IsActive }; db.Add(p); await db.SaveChangesAsync(ct); return Results.Ok(p); });
         admin.MapPut("/providers/{id:guid}", async (Guid id, ProviderRequest req, AppDbContext db, CancellationToken ct) => { var p = await db.Providers.FindAsync([id], ct); if (p is null) return Results.NotFound(); p.Name = req.Name; p.Slug = req.Slug; p.LogoUrl = req.LogoUrl; p.BaseUrl = req.BaseUrl; p.PricingUrl = req.PricingUrl; p.Protocol = req.Protocol; p.IsActive = req.IsActive; await db.SaveChangesAsync(ct); return Results.NoContent(); });
-        admin.MapPost("/providers/{id:guid}/credentials", async (Guid id, CredentialRequest req, AppDbContext db, SecretProtector secrets, CancellationToken ct) => { if (!await db.Providers.AnyAsync(x => x.Id == id, ct)) return Results.NotFound(); var c = new ProviderCredential { ProviderId = id, Label = req.Label, ProtectedApiKey = secrets.Protect(req.ApiKey), IsActive = req.IsActive, InitialBalanceUsd = req.InitialBalanceUsd, RemainingBalanceUsd = req.RemainingBalanceUsd, AlertThresholdUsd = req.AlertThresholdUsd }; db.Add(c); await db.SaveChangesAsync(ct); return Results.Ok(new { c.Id }); });
-        admin.MapPut("/credentials/{id:guid}/balance", async (Guid id, CredentialBalanceRequest req, AppDbContext db, CancellationToken ct) => { var c = await db.ProviderCredentials.FindAsync([id], ct); if (c is null) return Results.NotFound(); c.RemainingBalanceUsd = req.RemainingBalanceUsd; c.AlertThresholdUsd = req.AlertThresholdUsd; if (req.RemainingBalanceUsd > 0 && c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode) ProviderErrorMapper.Clear(c); await db.SaveChangesAsync(ct); return Results.NoContent(); });
-        admin.MapDelete("/credentials/{id:guid}", async (Guid id, AppDbContext db, CancellationToken ct) => { var c = await db.ProviderCredentials.FindAsync([id], ct); if (c is null) return Results.NotFound(); db.Remove(c); await db.SaveChangesAsync(ct); return Results.NoContent(); });
+        admin.MapPost("/providers/{id:guid}/credentials", async (Guid id, CredentialRequest req, AppDbContext db, SecretProtector secrets, CancellationToken ct) =>
+        {
+            if (!ValidCredentialBalances(req.InitialBalanceUsd, req.RemainingBalanceUsd, req.AlertThresholdUsd))
+                return InvalidCredentialBalance();
+            if (string.IsNullOrWhiteSpace(req.ApiKey))
+                return Results.BadRequest(new { code = "invalid_provider_api_key", message = "مقدار API Key نمی‌تواند خالی باشد." });
+            if (!await db.Providers.AnyAsync(x => x.Id == id, ct)) return Results.NotFound();
+            var c = new ProviderCredential { ProviderId = id, Label = req.Label, ProtectedApiKey = secrets.Protect(req.ApiKey), IsActive = req.IsActive, InitialBalanceUsd = req.InitialBalanceUsd, RemainingBalanceUsd = req.RemainingBalanceUsd, AlertThresholdUsd = req.AlertThresholdUsd };
+            db.Add(c); await db.SaveChangesAsync(ct); return Results.Ok(new { c.Id });
+        });
+        admin.MapPut("/credentials/{id:guid}/balance", async (Guid id, CredentialBalanceRequest req, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, CancellationToken ct) =>
+        {
+            var c = await db.ProviderCredentials.SingleOrDefaultAsync(x => x.Id == id && x.ProtectedApiKey != "", ct); if (c is null) return Results.NotFound();
+            var initialBalanceUsd = req.InitialBalanceUsd ?? c.InitialBalanceUsd;
+            if (!ValidCredentialBalances(initialBalanceUsd, req.RemainingBalanceUsd, req.AlertThresholdUsd))
+                return InvalidCredentialBalance();
+            var previous = new { c.InitialBalanceUsd, c.RemainingBalanceUsd, c.AlertThresholdUsd };
+            c.InitialBalanceUsd = initialBalanceUsd;
+            c.RemainingBalanceUsd = req.RemainingBalanceUsd;
+            c.AlertThresholdUsd = req.AlertThresholdUsd;
+            var quotaStatePreserved = c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode;
+            db.AuditLogs.Add(new AuditLog
+            {
+                ActorUserId = actor.UserId(),
+                Action = "provider_credential.balance.update",
+                EntityType = "provider_credential",
+                EntityId = c.Id.ToString(),
+                DetailsJson = JsonSerializer.Serialize(new
+                {
+                    previous,
+                    current = new { InitialBalanceUsd = initialBalanceUsd, req.RemainingBalanceUsd, req.AlertThresholdUsd },
+                    quotaStatePreserved
+                })
+            });
+            await db.SaveChangesAsync(ct); return Results.NoContent();
+        });
+        admin.MapDelete("/credentials/{id:guid}", async (Guid id, [FromBody] CredentialDeleteRequest? req, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, CancellationToken ct) =>
+        {
+            if (!string.Equals(req?.Confirmation, "حذف", StringComparison.Ordinal))
+                return Results.BadRequest(new
+                {
+                    code = "credential_delete_confirmation_required",
+                    message = "برای حذف قطعی کلید، عبارت «حذف» را دقیقاً وارد کنید."
+                });
+            var c = await db.ProviderCredentials.SingleOrDefaultAsync(x => x.Id == id && x.ProtectedApiKey != "", ct); if (c is null) return Results.NotFound();
+            var retainedUsageRecords = await db.UsageRecords.CountAsync(x => x.ProviderCredentialId == id, ct);
+            c.IsActive = false;
+            c.ProtectedApiKey = "";
+            db.AuditLogs.Add(new AuditLog
+            {
+                ActorUserId = actor.UserId(),
+                Action = "provider_credential.delete",
+                EntityType = "provider_credential",
+                EntityId = c.Id.ToString(),
+                DetailsJson = JsonSerializer.Serialize(new { c.ProviderId, c.Label, retainedUsageRecords, deletionMode = "tombstone" })
+            });
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        });
         admin.MapPost("/credentials/{id:guid}/test", async (Guid id, AppDbContext db, SecretProtector secrets, IHttpClientFactory clients, CancellationToken ct) =>
         {
-            var c = await db.ProviderCredentials.Include(x => x.Provider).SingleOrDefaultAsync(x => x.Id == id, ct); if (c?.Provider is null) return Results.NotFound(); var model = await db.Models.FirstOrDefaultAsync(x => x.ProviderId == c.ProviderId && x.IsActive, ct); if (model is null) return Results.BadRequest(new { message = "مدل فعالی وجود ندارد." });
+            var c = await db.ProviderCredentials.Include(x => x.Provider).SingleOrDefaultAsync(x => x.Id == id && x.ProtectedApiKey != "", ct); if (c?.Provider is null) return Results.NotFound(); var model = await db.Models.FirstOrDefaultAsync(x => x.ProviderId == c.ProviderId && x.IsActive, ct); if (model is null) return Results.BadRequest(new { message = "مدل فعالی وجود ندارد." });
             using var request = new HttpRequestMessage(HttpMethod.Post, c.Provider.BaseUrl.TrimEnd('/') + "/chat/completions"); request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secrets.Unprotect(c.ProtectedApiKey)); request.Content = JsonContent.Create(new { model = model.ModelId, messages = new[] { new { role = "user", content = "Reply only with OK" } }, max_tokens = 8 }); var sw = System.Diagnostics.Stopwatch.StartNew(); var response = await clients.CreateClient("providers").SendAsync(request, ct); var text = await response.Content.ReadAsStringAsync(ct); ProviderFailure? failure = null; if (response.IsSuccessStatusCode) ProviderErrorMapper.Clear(c); else { failure = ProviderErrorMapper.Classify(response.StatusCode, text); ProviderErrorMapper.Apply(c, failure); } await db.SaveChangesAsync(ct); return Results.Ok(new { success = response.IsSuccessStatusCode, status = (int)response.StatusCode, latencyMs = sw.ElapsedMilliseconds, errorCode = failure?.Code, errorMessage = failure?.PublicMessage(c.Provider.Name), response = text[..Math.Min(1000, text.Length)] });
         });
 
@@ -308,6 +364,16 @@ public static class Routes
     private static readonly HashSet<string> TicketCategories = ["technical", "billing", "account", "models", "general"];
     private static readonly HashSet<string> TicketPriorities = ["low", "normal", "high", "urgent"];
     private static readonly HashSet<string> ValidTicketStatuses = ["open", "waiting_support", "waiting_user", "resolved", "closed"];
+    private const decimal MaxCredentialBalanceUsd = 1_000_000_000m;
+    private static bool ValidCredentialBalances(decimal initial, decimal remaining, decimal threshold) =>
+        initial is >= 0 and <= MaxCredentialBalanceUsd
+        && remaining >= 0 && remaining <= initial
+        && threshold is >= 0 and <= MaxCredentialBalanceUsd;
+    private static IResult InvalidCredentialBalance() => Results.BadRequest(new
+    {
+        code = "invalid_credential_balance",
+        message = "مقادیر موجودی و هشدار باید نامنفی و حداکثر یک میلیارد دلار باشند؛ موجودی فعلی نیز نمی‌تواند از موجودی اولیه بیشتر باشد."
+    });
     private static string Clean(string? value, int max) { var text = (value ?? "").Trim(); return text[..Math.Min(max, text.Length)]; }
     private static string ValidTicketCategory(string value) => TicketCategories.Contains(value) ? value : "general";
     private static string ValidTicketPriority(string value) => TicketPriorities.Contains(value) ? value : "normal";

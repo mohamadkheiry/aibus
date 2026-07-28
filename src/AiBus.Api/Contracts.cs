@@ -15,7 +15,8 @@ public sealed record PricingComponentRequest(string Label, string Unit, decimal?
 public sealed record ModelRequest(Guid ProviderId, string ModelId, string DisplayName, string Modality, decimal InputPricePerMillionUsd, decimal OutputPricePerMillionUsd, decimal? CachedInputPricePerMillionUsd, int ContextWindow, bool SupportsStreaming, bool SupportsWebSocket, bool IsActive, string PricingSourceUrl, string TestPayloadJson, string ServiceType, string EndpointPath, string Region, bool IsPreview, PricingComponentRequest[] PricingComponents, string PricingNotes);
 public sealed record WalletAdjustRequest(decimal AmountUsd, string Description);
 public sealed record SuspendRequest(bool IsSuspended);
-public sealed record CredentialBalanceRequest(decimal RemainingBalanceUsd, decimal AlertThresholdUsd);
+public sealed record CredentialBalanceRequest(decimal? InitialBalanceUsd, decimal RemainingBalanceUsd, decimal AlertThresholdUsd);
+public sealed record CredentialDeleteRequest(string Confirmation);
 public sealed record CreateTicketRequest(string Subject, string Category, string Priority, string Message);
 public sealed record TicketMessageRequest(string Message);
 public sealed record UpdateTicketRequest(string Status, string Priority);

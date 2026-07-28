@@ -4,7 +4,7 @@ import {
   Activity, AlertTriangle, ArrowLeft, AudioLines, BarChart3, Bell, Bot, Check, ChevronDown, CircleDollarSign,
   Clock3, Code2, Copy, CreditCard, Database, Eye, EyeOff, Gauge, Globe2, KeyRound, LayoutDashboard,
   Headphones, Languages, LifeBuoy, LockKeyhole, LogOut, Menu, MessageSquareText, Mic2, Moon, MoreHorizontal, Network, Plus, Radio, RefreshCw,
-  Search, Settings, ShieldCheck, Sparkles, Sun, TestTube2, TrendingUp, UserCog, Users, Wallet, X, Zap
+  Search, Settings, ShieldCheck, Sparkles, Sun, TestTube2, Trash2, TrendingUp, UserCog, Users, Wallet, X, Zap
 } from 'lucide-react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, Pie, PieChart,
@@ -13,6 +13,15 @@ import {
 import { API, chartNumber, dateTime, money, Model, number, request, safeApiError, safeApiErrorFromText, usd, User, UserKey } from './api'
 import { TicketsPage } from './Tickets'
 import { Playground as MediaPlayground } from './Playground'
+import {
+  canDeleteCredential,
+  credentialBalancePayload,
+  MAX_CREDENTIAL_BALANCE_USD,
+  nextCredentialDeleteStep,
+  validateCredentialBalanceDraft,
+  type CredentialBalanceDraft,
+  type CredentialDeleteStep,
+} from './credentialAdmin'
 
 type Page = 'dashboard'|'models'|'keys'|'wallet'|'usage'|'tickets'|'admin-dashboard'|'providers'|'admin-models'|'users'|'admin-tickets'|'visits'|'settings'
 type IconType = typeof LayoutDashboard
@@ -310,20 +319,59 @@ function AdminDashboard(){
 type ProviderCredentialAdmin={id:string;label:string;apiKey?:string;isActive:boolean;initialBalanceUsd:number;remainingBalanceUsd:number;alertThresholdUsd:number;requestCount:number;lastError?:string;lastErrorCode?:string;lastErrorAtUtc?:string;isLow:boolean;isQuotaExhausted?:boolean}
 type ProviderAdmin={id:string;name:string;slug:string;logoUrl:string;baseUrl:string;pricingUrl:string;protocol:string;isActive:boolean;modelCount:number;credentials:ProviderCredentialAdmin[]}
 const hasQuotaFailure=(credential:ProviderCredentialAdmin)=>credential.isQuotaExhausted||credential.lastErrorCode==='provider_quota_exhausted'
-function ProviderCredentialRow({credential,onTest}:{credential:ProviderCredentialAdmin;onTest:(id:string)=>void}){
+function ProviderCredentialRow({credential,onTest,onManage}:{credential:ProviderCredentialAdmin;onTest:(id:string)=>void;onManage:(credential:ProviderCredentialAdmin)=>void}){
   const quotaExhausted=hasQuotaFailure(credential),needsAttention=quotaExhausted||credential.isLow
   const balancePercent=quotaExhausted?0:credential.initialBalanceUsd?Math.min(100,Math.max(0,credential.remainingBalanceUsd/credential.initialBalanceUsd*100)):100
-  return <div className={`credential${needsAttention?' low':''}${quotaExhausted?' quota-exhausted':''}`}><div className={`credential-status ${credential.isActive&&!quotaExhausted?'ok':''}`}><KeyRound/></div><div className="credential-main"><div><b>{credential.label}</b>{quotaExhausted?<Badge tone="danger">اعتبار/سهمیه تمام شده</Badge>:credential.isLow&&<Badge tone="danger">موجودی کم</Badge>}</div><code dir="ltr">{credential.apiKey?`${credential.apiKey.slice(0,8)}••••${credential.apiKey.slice(-4)}`:'••••••••'}</code><small className={credential.lastError?'connection-warning':'connection-healthy'}>{quotaExhausted?'اعتبار واقعی این مسیر کافی نیست و تا تأمین اعتبار در اولویت مسیریابی قرار نمی‌گیرد.':credential.lastError?'آخرین بررسی اتصال ناموفق بود؛ جزئیات فنی فقط برای مدیر قابل مشاهده است.':'آخرین اتصال بدون خطا'}</small>{credential.lastError&&<details className="credential-diagnostics"><summary>جزئیات فنی مدیر</summary><div>{credential.lastErrorCode&&<span>کد: <code dir="ltr">{credential.lastErrorCode}</code></span>}{credential.lastErrorAtUtc&&<span>زمان: {dateTime(credential.lastErrorAtUtc)}</span>}<code className="diagnostic-message" dir="ltr">{credential.lastError}</code></div></details>}</div><div className="balance-gauge"><span><b>${usd(credential.remainingBalanceUsd)}</b> از ${usd(credential.initialBalanceUsd)}</span><div><i style={{width:`${balancePercent}%`}}/></div></div><div className="credential-actions"><button className="ghost-btn compact" onClick={()=>onTest(credential.id)}><TestTube2/>تست</button><button className="icon-btn"><MoreHorizontal/></button></div></div>
+  return <div className={`credential${needsAttention?' low':''}${quotaExhausted?' quota-exhausted':''}`}><div className={`credential-status ${credential.isActive&&!quotaExhausted?'ok':''}`}><KeyRound/></div><div className="credential-main"><div><b>{credential.label}</b>{quotaExhausted?<Badge tone="danger">اعتبار/سهمیه تمام شده</Badge>:credential.isLow&&<Badge tone="danger">موجودی کم</Badge>}</div><code dir="ltr">{credential.apiKey?`${credential.apiKey.slice(0,8)}••••${credential.apiKey.slice(-4)}`:'••••••••'}</code><small className={credential.lastError?'connection-warning':'connection-healthy'}>{quotaExhausted?'اعتبار واقعی این مسیر کافی نیست و تا تأمین اعتبار در اولویت مسیریابی قرار نمی‌گیرد.':credential.lastError?'آخرین بررسی اتصال ناموفق بود؛ جزئیات فنی فقط برای مدیر قابل مشاهده است.':'آخرین اتصال بدون خطا'}</small>{credential.lastError&&<details className="credential-diagnostics"><summary>جزئیات فنی مدیر</summary><div>{credential.lastErrorCode&&<span>کد: <code dir="ltr">{credential.lastErrorCode}</code></span>}{credential.lastErrorAtUtc&&<span>زمان: {dateTime(credential.lastErrorAtUtc)}</span>}<code className="diagnostic-message" dir="ltr">{credential.lastError}</code></div></details>}</div><div className="balance-gauge"><span><b>${usd(credential.remainingBalanceUsd)}</b> از ${usd(credential.initialBalanceUsd)}</span><div><i style={{width:`${balancePercent}%`}}/></div></div><div className="credential-actions"><button className="ghost-btn compact" onClick={()=>onTest(credential.id)}><TestTube2/>تست</button><button className="ghost-btn compact credential-manage" onClick={()=>onManage(credential)} aria-label={`مدیریت کلید ${credential.label}`}><Settings/>مدیریت</button></div></div>
 }
+
+function ManageCredential({provider,credential,close,done}:{provider:ProviderAdmin;credential:ProviderCredentialAdmin;close:()=>void;done:()=>void|Promise<void>}){
+  const [form,setForm]=useState<CredentialBalanceDraft>({
+    initialBalanceUsd:String(credential.initialBalanceUsd),
+    remainingBalanceUsd:String(credential.remainingBalanceUsd),
+    alertThresholdUsd:String(credential.alertThresholdUsd),
+  })
+  const [busy,setBusy]=useState(false),[deleteStep,setDeleteStep]=useState<CredentialDeleteStep>('idle'),[deleteConfirmation,setDeleteConfirmation]=useState('')
+  const maskedKey=credential.apiKey?`${credential.apiKey.slice(0,8)}••••${credential.apiKey.slice(-4)}`:'••••••••'
+  const update=(field:keyof CredentialBalanceDraft,value:string)=>setForm(current=>({...current,[field]:value}))
+  const save=async(e:FormEvent)=>{
+    e.preventDefault()
+    const validationError=validateCredentialBalanceDraft(form)
+    if(validationError)return toast.error(validationError)
+    setBusy(true)
+    try{
+      await request(`/api/admin/credentials/${credential.id}/balance`,{method:'PUT',body:JSON.stringify(credentialBalancePayload(form))})
+      toast.success('موجودی و آستانه هشدار کلید به‌روزرسانی شد')
+      await done()
+    }catch(e){toast.error((e as Error).message)}finally{setBusy(false)}
+  }
+  const remove=async(e:FormEvent)=>{
+    e.preventDefault()
+    if(!canDeleteCredential(deleteStep,deleteConfirmation))return
+    setBusy(true)
+    try{
+      await request(`/api/admin/credentials/${credential.id}`,{method:'DELETE',body:JSON.stringify({confirmation:deleteConfirmation.trim()})})
+      toast.success(`کلید «${credential.label}» حذف شد`)
+      await done()
+    }catch(e){toast.error((e as Error).message)}finally{setBusy(false)}
+  }
+
+  if(deleteStep==='warning')return <Modal title="تأیید اول حذف کلید" subtitle="این عملیات روی مسیریابی درخواست‌های کاربران اثر می‌گذارد." close={close}><div className="credential-delete-warning"><AlertTriangle/><div><b>آیا از شروع حذف این کلید مطمئن هستید؟</b><p>پس از حذف، این کلید دیگر در failover استفاده نمی‌شود و سابقه تنظیمات موجودی آن قابل بازیابی نخواهد بود.</p><div className="credential-delete-identity"><span>ارائه‌دهنده<strong>{provider.name}</strong></span><span>کلید<strong>{credential.label}</strong></span><code dir="ltr">{maskedKey}</code></div></div></div><div className="modal-actions"><button type="button" className="ghost-btn" onClick={()=>setDeleteStep('idle')}>بازگشت</button><button type="button" className="primary-btn danger-action" onClick={()=>setDeleteStep(nextCredentialDeleteStep(deleteStep))}><AlertTriangle/>تأیید اول و ادامه</button></div></Modal>
+
+  if(deleteStep==='verify')return <Modal title="تأیید نهایی حذف کلید" subtitle={`${provider.name} · ${credential.label}`} close={close}><form onSubmit={remove}><div className="credential-delete-final"><Trash2/><div><b>این حذف دائمی و برگشت‌ناپذیر است</b><p>برای جلوگیری از حذف اشتباهی، واژه <strong>حذف</strong> را دقیقاً در کادر زیر وارد کنید.</p></div></div><div className="credential-delete-target"><span><small>ارائه‌دهنده</small><b>{provider.name}</b></span><span><small>برچسب کلید</small><b>{credential.label}</b></span><code dir="ltr">{maskedKey}</code></div><label className="field delete-confirm-field"><span>برای تأیید نهایی بنویسید «حذف»</span><input autoFocus autoComplete="off" value={deleteConfirmation} onChange={e=>setDeleteConfirmation(e.target.value)} placeholder="حذف" aria-label="تأیید متنی حذف کلید"/><small>تا زمانی که عبارت دقیق وارد نشود، دکمه حذف فعال نخواهد شد.</small></label><div className="modal-actions"><button type="button" className="ghost-btn" onClick={()=>{setDeleteStep('warning');setDeleteConfirmation('')}}>بازگشت به هشدار</button><button className="primary-btn danger-action" disabled={busy||!canDeleteCredential(deleteStep,deleteConfirmation)}>{busy?<RefreshCw className="spin"/>:<Trash2/>}حذف قطعی و دائمی</button></div></form></Modal>
+
+  return <Modal title={`مدیریت کلید ${credential.label}`} subtitle={`${provider.name} · ویرایش موجودی یا حذف امن کلید`} close={close}><form onSubmit={save}><div className="credential-manage-identity"><div className={`credential-status ${credential.isActive?'ok':''}`}><KeyRound/></div><span><b>{credential.label}</b><code dir="ltr">{maskedKey}</code></span><Badge tone={credential.isActive?'mint':'danger'}>{credential.isActive?'فعال':'غیرفعال'}</Badge></div><div className="form-grid credential-balance-form"><label className="field"><span>موجودی اولیه ($)</span><input dir="ltr" type="number" min="0" max={MAX_CREDENTIAL_BALANCE_USD} step="0.000001" required value={form.initialBalanceUsd} onChange={e=>update('initialBalanceUsd',e.target.value)}/><small>مبنای نمایش درصد باقیمانده</small></label><label className="field"><span>موجودی فعلی ($)</span><input dir="ltr" type="number" min="0" max={MAX_CREDENTIAL_BALANCE_USD} step="0.000001" required value={form.remainingBalanceUsd} onChange={e=>update('remainingBalanceUsd',e.target.value)}/><small>موجودی فعلی نمی‌تواند از موجودی اولیه بیشتر باشد.</small></label><label className="field span-2"><span>آستانه هشدار موجودی ($)</span><input dir="ltr" type="number" min="0" max={MAX_CREDENTIAL_BALANCE_USD} step="0.000001" required value={form.alertThresholdUsd} onChange={e=>update('alertThresholdUsd',e.target.value)}/><small>با رسیدن موجودی به این عدد، هشدار سوپرادمین نمایش داده می‌شود.</small></label></div><div className="credential-balance-note"><CircleDollarSign/><p><b>اصلاح موجودی ثبت‌شده در AiBus</b><span>این تغییر برای پایش و اولویت‌بندی کلید استفاده می‌شود و موجودی حساب شرکت ارائه‌دهنده را مستقیماً شارژ نمی‌کند.</span></p></div><div className="credential-danger-zone"><div><Trash2/><span><b>حذف کلید ارائه‌دهنده</b><small>حذف فقط پس از دو تأیید مستقل انجام می‌شود.</small></span></div><button type="button" className="ghost-btn danger-soft" onClick={()=>setDeleteStep(nextCredentialDeleteStep(deleteStep))}><Trash2/>شروع حذف کلید</button></div><div className="modal-actions"><button type="button" className="ghost-btn" onClick={close}>انصراف</button><button className="primary-btn" disabled={busy}>{busy?<RefreshCw className="spin"/>:<Check/>}ذخیره تغییرات</button></div></form></Modal>
+}
+
 function ProvidersPage(){
-  const [items,setItems]=useState<ProviderAdmin[]>([]),[selected,setSelected]=useState<ProviderAdmin|null>(null),[addProvider,setAddProvider]=useState(false),[addKey,setAddKey]=useState<ProviderAdmin|null>(null)
+  const [items,setItems]=useState<ProviderAdmin[]>([]),[selected,setSelected]=useState<ProviderAdmin|null>(null),[addProvider,setAddProvider]=useState(false),[addKey,setAddKey]=useState<ProviderAdmin|null>(null),[manage,setManage]=useState<{provider:ProviderAdmin;credential:ProviderCredentialAdmin}|null>(null)
   const load=()=>request<ProviderAdmin[]>('/api/admin/providers').then(next=>{setItems(next);setSelected(current=>current?next.find(provider=>provider.id===current.id)||current:current)}).catch(e=>toast.error(e.message));useEffect(()=>{void load()},[])
   const test=async(id:string)=>{const toastId=toast.loading('در حال تست اتصال...');try{const r=await request<any>(`/api/admin/credentials/${id}/test`,{method:'POST'});if(r.success)toast.success(`اتصال موفق · ${r.latencyMs}ms`,{id:toastId});else toast.error(safeApiError(r,r.status).message,{id:toastId});await load()}catch(e){toast.error(safeApiError(e).message,{id:toastId})}}
   return <><PageHead eyebrow="زیرساخت مدل‌ها" title="ارائه‌دهندگان و کلیدها" description="اتصال‌های چندکلیدی، موجودی، failover و سلامت هر Provider را مدیریت کنید."><button className="primary-btn" onClick={()=>setAddProvider(true)}><Plus/>افزودن ارائه‌دهنده</button></PageHead>
   <div className="provider-summary"><div><Network/><span><b>{number(items.length)}</b><small>ارائه‌دهنده</small></span></div><div><KeyRound/><span><b>{number(items.reduce((a,p)=>a+p.credentials.length,0))}</b><small>کلید ثبت‌شده</small></span></div><div><Activity/><span><b>{number(items.reduce((a,p)=>a+p.credentials.filter(c=>c.isActive).length,0))}</b><small>مسیر فعال</small></span></div><div><AlertTriangle/><span><b>{number(items.reduce((a,p)=>a+p.credentials.filter(c=>c.isLow||hasQuotaFailure(c)).length,0))}</b><small>هشدار موجودی</small></span></div></div>
   <div className="providers-grid">{items.map(p=><article className="provider-card" key={p.id} onClick={()=>setSelected(p)}><header><ProviderLogo name={p.name} url={p.logoUrl} className="lg"/><div><h3>{p.name}</h3><code dir="ltr">{p.slug}</code></div><Badge tone={p.isActive?'mint':'danger'}><i className="badge-dot"/>{p.isActive?'فعال':'غیرفعال'}</Badge></header><div className="provider-endpoint"><Globe2/><span><small>Base URL</small><code dir="ltr">{p.baseUrl}</code></span></div><div className="provider-stats"><div><b>{p.modelCount}</b><span>مدل</span></div><div><b>{p.credentials.length}</b><span>کلید</span></div><div><b>{number(p.credentials.reduce((a,c)=>a+c.requestCount,0))}</b><span>درخواست</span></div></div><div className="key-health">{p.credentials.length?p.credentials.slice(0,4).map(c=><span key={c.id} className={c.isLow||hasQuotaFailure(c)?'low':c.isActive?'ok':'off'} title={hasQuotaFailure(c)?`${c.label} · اعتبار/سهمیه تمام شده`:c.label}/>):<span className="no-key">کلیدی تنظیم نشده است</span>}</div><footer><span>پروتکل: <b>{p.protocol}</b></span><button className="link-btn">مدیریت <ArrowLeft/></button></footer></article>)}</div>
-  {selected&&<Modal title={selected.name} subtitle="کلیدها، موجودی و سلامت اتصال" close={()=>setSelected(null)} wide><div className="credential-head"><div className="provider-identity"><ProviderLogo name={selected.name} url={selected.logoUrl} className="lg"/><div><b>{selected.name}</b><code dir="ltr">{selected.baseUrl}</code></div></div><button className="primary-btn compact" onClick={()=>setAddKey(selected)}><Plus/>افزودن کلید</button></div><div className="credential-list">{selected.credentials.map(credential=><ProviderCredentialRow key={credential.id} credential={credential} onTest={test}/>)}{!selected.credentials.length&&<Empty text="هنوز کلیدی برای این ارائه‌دهنده ثبت نشده است."/>}</div></Modal>}
-  {addKey&&<AddCredential provider={addKey} close={()=>setAddKey(null)} done={()=>{setAddKey(null);setSelected(null);load()}}/>}{addProvider&&<AddProvider close={()=>setAddProvider(false)} done={()=>{setAddProvider(false);load()}}/>}</>
+  {selected&&<Modal title={selected.name} subtitle="کلیدها، موجودی و سلامت اتصال" close={()=>setSelected(null)} wide><div className="credential-head"><div className="provider-identity"><ProviderLogo name={selected.name} url={selected.logoUrl} className="lg"/><div><b>{selected.name}</b><code dir="ltr">{selected.baseUrl}</code></div></div><button className="primary-btn compact" onClick={()=>setAddKey(selected)}><Plus/>افزودن کلید</button></div><div className="credential-list">{selected.credentials.map(credential=><ProviderCredentialRow key={credential.id} credential={credential} onTest={test} onManage={item=>setManage({provider:selected,credential:item})}/>)}{!selected.credentials.length&&<Empty text="هنوز کلیدی برای این ارائه‌دهنده ثبت نشده است."/>}</div></Modal>}
+  {manage&&<ManageCredential provider={manage.provider} credential={manage.credential} close={()=>setManage(null)} done={async()=>{setManage(null);await load()}}/>}{addKey&&<AddCredential provider={addKey} close={()=>setAddKey(null)} done={()=>{setAddKey(null);setSelected(null);load()}}/>}{addProvider&&<AddProvider close={()=>setAddProvider(false)} done={()=>{setAddProvider(false);load()}}/>}</>
 }
 
 function AddCredential({provider,close,done}:{provider:ProviderAdmin;close:()=>void;done:()=>void}){

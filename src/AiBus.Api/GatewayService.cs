@@ -523,7 +523,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
     }
 
     private Task<List<ProviderCredential>> ActiveCredentials(Guid providerId, CancellationToken ct) =>
-        db.ProviderCredentials.Where(x => x.ProviderId == providerId && x.IsActive)
+        db.ProviderCredentials.Where(x => x.ProviderId == providerId && x.IsActive && x.ProtectedApiKey != "")
             .OrderBy(x => x.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode)
             .ThenByDescending(x => (double)x.RemainingBalanceUsd > (double)x.AlertThresholdUsd)
             .ThenBy(x => x.LastUsedAtUtc).ToListAsync(ct);
