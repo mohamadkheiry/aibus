@@ -47,6 +47,7 @@ public static class SeedData
             CREATE INDEX IF NOT EXISTS "IX_TicketMessages_TicketId_CreatedAtUtc" ON "TicketMessages" ("TicketId", "CreatedAtUtc");
             """);
         await EnsureUserApiKeyColumns(db);
+        await EnsureProviderCredentialColumns(db);
         await EnsureModelCatalogColumns(db);
         foreach (var mobile in SuperAdministrators.Mobiles)
         {
@@ -203,6 +204,37 @@ public static class SeedData
             // Column names and definitions come exclusively from the static allow-list above.
             command.CommandText = $"ALTER TABLE \"Models\" ADD COLUMN \"{column.Key}\" {column.Value}";
             await command.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static async Task EnsureProviderCredentialColumns(AppDbContext db)
+    {
+        var additions = new Dictionary<string, string>
+        {
+            [nameof(ProviderCredential.LastErrorCode)] = "TEXT NULL",
+            [nameof(ProviderCredential.LastErrorAtUtc)] = "TEXT NULL"
+        };
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA table_info(\"ProviderCredentials\")";
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync()) existing.Add(reader.GetString(1));
+        }
+        foreach (var column in additions.Where(x => !existing.Contains(x.Key)))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"ALTER TABLE \"ProviderCredentials\" ADD COLUMN \"{column.Key}\" {column.Value}";
+            try
+            {
+                await command.ExecuteNonQueryAsync();
+            }
+            catch (SqliteException ex) when (ex.SqliteErrorCode == 1 && ex.Message.Contains("duplicate column name", StringComparison.OrdinalIgnoreCase))
+            {
+                // Another application instance completed the same idempotent startup migration.
+            }
         }
     }
 

@@ -21,8 +21,8 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         var model = await db.Models.Include(x => x.Provider).SingleOrDefaultAsync(x => x.ModelId == modelName && x.IsActive && x.SupportsWebSocket && x.Provider!.IsActive, ct);
         if (model?.Provider is null) { context.Response.StatusCode = 404; return; }
         if (!await CheckAccess(context, user, userKey, model, ct)) return;
-        var credential = await db.ProviderCredentials.Where(x => x.ProviderId == model.ProviderId && x.IsActive).OrderByDescending(x => (double)x.RemainingBalanceUsd).FirstOrDefaultAsync(ct);
-        if (credential is null) { context.Response.StatusCode = 503; return; }
+        var credentials = await ActiveCredentials(model.ProviderId, ct);
+        if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
 
         // OpenAI transcription sockets use intent=transcription without a URL model. The
         // selected transcription model is configured inside session.update and billed here.
@@ -32,23 +32,99 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                 model.ServiceType == "speech_to_text" ? "transcription" : model.ModelId
         };
         var upstreamUrl = BuildUpstreamUri(model.Provider, model, true, realtimeQuery);
-        using var upstream = new ClientWebSocket();
-        ConfigureWebSocketAuthentication(upstream, model.Provider, model, secrets.Unprotect(credential.ProtectedApiKey));
-        try { await upstream.ConnectAsync(upstreamUrl, ct); }
-        catch (Exception ex) { credential.LastError = ex.Message[..Math.Min(500, ex.Message.Length)]; await db.SaveChangesAsync(ct); context.Response.StatusCode = 502; return; }
+        var failures = new List<ProviderFailure>();
+        ClientWebSocket? upstream = null;
+        ProviderCredential? credential = null;
+        foreach (var candidate in credentials)
+        {
+            var socket = new ClientWebSocket();
+            ConfigureWebSocketAuthentication(socket, model.Provider, model, secrets.Unprotect(candidate.ProtectedApiKey));
+            try
+            {
+                await socket.ConnectAsync(upstreamUrl, ct);
+                upstream = socket;
+                credential = candidate;
+                break;
+            }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                socket.Dispose();
+                var failure = ProviderErrorMapper.Classify(ex);
+                failures.Add(failure);
+                ProviderErrorMapper.Apply(candidate, failure);
+                logger.LogWarning(ex, "Realtime provider key {CredentialId} failed during handshake", candidate.Id);
+            }
+        }
+        if (upstream is null || credential is null)
+        {
+            var failure = ProviderErrorMapper.MostRelevant(failures);
+            await Record(user, userKey, model, credentials.Last(), 0, 0, 0, 0, "failed", context.TraceIdentifier, CancellationToken.None);
+            await WriteProviderError(context, failure, model.Provider.Name);
+            return;
+        }
+        using (upstream)
+        {
         var requestedProtocols = context.Request.Headers.SecWebSocketProtocol.ToString();
         using var downstream = requestedProtocols.Contains("aibus-realtime", StringComparison.Ordinal)
             ? await context.WebSockets.AcceptWebSocketAsync("aibus-realtime")
             : await context.WebSockets.AcceptWebSocketAsync();
         long inputTokens = 0, outputTokens = 0, inputAudioTokens = 0, outputAudioTokens = 0;
+        ProviderFailure? realtimeFailure = null;
         var started = Stopwatch.StartNew();
         var downToUp = Relay(downstream, upstream, null, ct);
-        var upToDown = Relay(upstream, downstream, text => ParseRealtimeUsage(text, ref inputTokens, ref outputTokens, ref inputAudioTokens, ref outputAudioTokens), ct);
-        await Task.WhenAny(downToUp, upToDown);
+        var upToDown = Relay(upstream, downstream, text =>
+        {
+            ParseRealtimeUsage(text, ref inputTokens, ref outputTokens, ref inputAudioTokens, ref outputAudioTokens);
+            if (!ProviderErrorMapper.TryClassifyInBand(text, out var failure) || failure is null) return text;
+            realtimeFailure = failure;
+            ProviderErrorMapper.Apply(credential, failure);
+            return ProviderErrorMapper.PublicRealtimeErrorJson(failure, model.Provider.Name);
+        }, ct);
+        var completed = await Task.WhenAny(downToUp, upToDown);
+        try
+        {
+            var relayResult = await completed;
+            if (ReferenceEquals(completed, upToDown)
+                && relayResult.CloseStatus is not null and not WebSocketCloseStatus.NormalClosure)
+            {
+                var shouldNotifyDownstream = realtimeFailure is null;
+                realtimeFailure ??= ProviderErrorMapper.Classify(
+                    HttpStatusCode.BadGateway,
+                    $"WebSocket close {(int)relayResult.CloseStatus.Value}: {relayResult.CloseDescription}");
+                ProviderErrorMapper.Apply(credential, realtimeFailure);
+                if (shouldNotifyDownstream && downstream.State == WebSocketState.Open)
+                {
+                    try
+                    {
+                        var safeError = Encoding.UTF8.GetBytes(
+                            ProviderErrorMapper.PublicRealtimeErrorJson(realtimeFailure, model.Provider.Name));
+                        await downstream.SendAsync(safeError, WebSocketMessageType.Text, true, CancellationToken.None);
+                    }
+                    catch (Exception sendException)
+                    {
+                        logger.LogDebug(sendException, "Could not deliver the sanitized realtime close error to the client");
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (!ct.IsCancellationRequested)
+        {
+            realtimeFailure ??= ProviderErrorMapper.Classify(ex);
+            ProviderErrorMapper.Apply(credential, realtimeFailure);
+            logger.LogWarning(ex, "Realtime relay failed for provider key {CredentialId}", credential.Id);
+        }
         try { if (downstream.State == WebSocketState.Open) await downstream.CloseAsync(WebSocketCloseStatus.NormalClosure, "closed", CancellationToken.None); } catch { }
         try { if (upstream.State == WebSocketState.Open) await upstream.CloseAsync(WebSocketCloseStatus.NormalClosure, "closed", CancellationToken.None); } catch { }
-        var cost = EstimateRealtimeCost(model, inputTokens, outputTokens, inputAudioTokens, outputAudioTokens);
-        await Record(user, userKey, model, credential, inputTokens, outputTokens, cost, started.ElapsedMilliseconds, "success", context.TraceIdentifier, CancellationToken.None);
+        if (realtimeFailure is not null)
+        {
+            await Record(user, userKey, model, credential, inputTokens, outputTokens, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, CancellationToken.None);
+        }
+        else
+        {
+            var cost = EstimateRealtimeCost(model, inputTokens, outputTokens, inputAudioTokens, outputAudioTokens);
+            await Record(user, userKey, model, credential, inputTokens, outputTokens, cost, started.ElapsedMilliseconds, "success", context.TraceIdentifier, CancellationToken.None);
+        }
+        }
     }
 
     public async Task ForwardSpeech(HttpContext context, CancellationToken ct)
@@ -68,34 +144,61 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             if (!await CheckAccess(context, user, userKey, model, ct)) return;
 
             var credentials = await ActiveCredentials(model.ProviderId, ct);
-            if (credentials.Count == 0) { await WriteError(context, 503, "provider_unavailable", "کلید فعالی برای ارائه‌دهنده تنظیم نشده است."); return; }
+            if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
             var started = Stopwatch.StartNew();
+            var failures = new List<ProviderFailure>();
+            ProviderCredential? lastAttempt = null;
             foreach (var credential in credentials)
             {
+                lastAttempt = credential;
                 try
                 {
                     using var upstream = await SendJson(model, credential, body.RootElement, ct);
                     if (!upstream.IsSuccessStatusCode)
                     {
                         var error = await upstream.Content.ReadAsStringAsync(ct);
-                        credential.LastError = $"{(int)upstream.StatusCode}: {error}"[..Math.Min(500, $"{(int)upstream.StatusCode}: {error}".Length)];
-                        if (upstream.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.PaymentRequired or HttpStatusCode.TooManyRequests) continue;
+                        var failure = ProviderErrorMapper.Classify(upstream.StatusCode, error);
+                        failures.Add(failure);
+                        ProviderErrorMapper.Apply(credential, failure);
+                        if (failure.ShouldFailover) continue;
                         await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct);
-                        context.Response.StatusCode = (int)upstream.StatusCode; context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json";
-                        await context.Response.WriteAsync(error, ct); return;
+                        await WriteProviderError(context, failure, model.Provider.Name);
+                        return;
+                    }
+                    byte[]? bufferedBody = null;
+                    if (upstream.Content.Headers.ContentType?.MediaType?.Contains("json", StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        bufferedBody = await upstream.Content.ReadAsByteArrayAsync(ct);
+                        var applicationBody = Encoding.UTF8.GetString(bufferedBody);
+                        if (ProviderErrorMapper.TryClassifyInBand(applicationBody, out var applicationFailure) && applicationFailure is not null)
+                        {
+                            failures.Add(applicationFailure);
+                            ProviderErrorMapper.Apply(credential, applicationFailure);
+                            continue;
+                        }
                     }
                     context.Response.StatusCode = 200;
                     context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "audio/mpeg";
                     if (upstream.Content.Headers.ContentDisposition is not null) context.Response.Headers.ContentDisposition = upstream.Content.Headers.ContentDisposition.ToString();
-                    await upstream.Content.CopyToAsync(context.Response.Body, ct);
+                    if (bufferedBody is null) await upstream.Content.CopyToAsync(context.Response.Body, ct);
+                    else await context.Response.Body.WriteAsync(bufferedBody, ct);
                     var input = body.RootElement.TryGetProperty("input", out var inputProperty) ? inputProperty.GetString() ?? "" : body.RootElement.TryGetProperty("text", out var textProperty) ? textProperty.GetString() ?? "" : "";
                     var cost = EstimateMediaCost(model, input.Length, 0);
                     await Record(user, userKey, model, credential, input.Length, 0, cost, started.ElapsedMilliseconds, "success", context.TraceIdentifier, ct);
                     return;
                 }
-                catch (Exception ex) { credential.LastError = ex.Message[..Math.Min(500, ex.Message.Length)]; logger.LogWarning(ex, "Speech provider key {CredentialId} failed", credential.Id); }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    var failure = ProviderErrorMapper.Classify(ex);
+                    failures.Add(failure);
+                    ProviderErrorMapper.Apply(credential, failure);
+                    logger.LogWarning(ex, "Speech provider key {CredentialId} failed", credential.Id);
+                }
             }
-            await db.SaveChangesAsync(ct); await WriteError(context, 503, "provider_unavailable", "همه مسیرهای ارائه‌دهنده ناموفق بودند.");
+            var terminalFailure = ProviderErrorMapper.MostRelevant(failures);
+            if (lastAttempt is not null) await Record(user, userKey, model, lastAttempt, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, CancellationToken.None);
+            else await db.SaveChangesAsync(CancellationToken.None);
+            await WriteProviderError(context, terminalFailure, model.Provider.Name);
         }
     }
 
@@ -114,14 +217,17 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         if (model?.Provider is null || model.ServiceType is not ("speech_to_text" or "translation" or "audio_understanding")) { await WriteError(context, 404, "model_not_found", "مدل فعال صوت‌به‌متن پیدا نشد."); return; }
         if (!await CheckAccess(context, user, userKey, model, ct)) return;
         var credentials = await ActiveCredentials(model.ProviderId, ct);
-        if (credentials.Count == 0) { await WriteError(context, 503, "provider_unavailable", "کلید فعالی برای ارائه‌دهنده تنظیم نشده است."); return; }
+        if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
 
         await using var source = file.OpenReadStream();
         using var audio = new MemoryStream(); await source.CopyToAsync(audio, ct); var audioBytes = audio.ToArray();
         var durationSeconds = decimal.TryParse(form["aibus_duration_seconds"].ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var duration) ? Math.Max(0, duration) : 0;
         var started = Stopwatch.StartNew();
+        var failures = new List<ProviderFailure>();
+        ProviderCredential? lastAttempt = null;
         foreach (var credential in credentials)
         {
+            lastAttempt = credential;
             try
             {
                 using var upstream = await SendMultipart(model, credential, form, file, audioBytes, ct);
@@ -129,20 +235,39 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                 if (!upstream.IsSuccessStatusCode)
                 {
                     var error = Encoding.UTF8.GetString(responseBody);
-                    credential.LastError = $"{(int)upstream.StatusCode}: {error}"[..Math.Min(500, $"{(int)upstream.StatusCode}: {error}".Length)];
-                    if (upstream.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.PaymentRequired or HttpStatusCode.TooManyRequests) continue;
+                    var failure = ProviderErrorMapper.Classify(upstream.StatusCode, error);
+                    failures.Add(failure);
+                    ProviderErrorMapper.Apply(credential, failure);
+                    if (failure.ShouldFailover) continue;
                     await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct);
-                    context.Response.StatusCode = (int)upstream.StatusCode; context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json"; await context.Response.Body.WriteAsync(responseBody, ct); return;
+                    await WriteProviderError(context, failure, model.Provider.Name);
+                    return;
+                }
+                var responseText = Encoding.UTF8.GetString(responseBody);
+                if (ProviderErrorMapper.TryClassifyInBand(responseText, out var applicationFailure) && applicationFailure is not null)
+                {
+                    failures.Add(applicationFailure);
+                    ProviderErrorMapper.Apply(credential, applicationFailure);
+                    continue;
                 }
                 context.Response.StatusCode = 200; context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json"; await context.Response.Body.WriteAsync(responseBody, ct);
-                long inputTokens = 0, outputTokens = 0; ParseUsage(Encoding.UTF8.GetString(responseBody), ref inputTokens, ref outputTokens);
+                long inputTokens = 0, outputTokens = 0; ParseUsage(responseText, ref inputTokens, ref outputTokens);
                 var cost = inputTokens + outputTokens > 0 ? EstimateTokenCost(model, inputTokens, outputTokens) : EstimateMediaCost(model, 0, durationSeconds);
                 await Record(user, userKey, model, credential, inputTokens > 0 ? inputTokens : (long)Math.Ceiling(durationSeconds), outputTokens, cost, started.ElapsedMilliseconds, "success", context.TraceIdentifier, ct);
                 return;
             }
-            catch (Exception ex) { credential.LastError = ex.Message[..Math.Min(500, ex.Message.Length)]; logger.LogWarning(ex, "Transcription provider key {CredentialId} failed", credential.Id); }
+            catch (Exception ex) when (!ct.IsCancellationRequested)
+            {
+                var failure = ProviderErrorMapper.Classify(ex);
+                failures.Add(failure);
+                ProviderErrorMapper.Apply(credential, failure);
+                logger.LogWarning(ex, "Transcription provider key {CredentialId} failed", credential.Id);
+            }
         }
-        await db.SaveChangesAsync(ct); await WriteError(context, 503, "provider_unavailable", "همه مسیرهای ارائه‌دهنده ناموفق بودند.");
+        var terminalFailure = ProviderErrorMapper.MostRelevant(failures);
+        if (lastAttempt is not null) await Record(user, userKey, model, lastAttempt, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, CancellationToken.None);
+        else await db.SaveChangesAsync(CancellationToken.None);
+        await WriteProviderError(context, terminalFailure, model.Provider.Name);
     }
 
     public async Task ForwardChat(HttpContext context, CancellationToken ct)
@@ -167,41 +292,74 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             if (userKey.RequestLimit.HasValue && userKey.RequestCount >= userKey.RequestLimit.Value) { await WriteError(context, 429, "request_limit", "سقف تعداد درخواست این کلید تمام شده است."); return; }
             if (userKey.SpendLimitUsd.HasValue && userKey.SpentUsd >= userKey.SpendLimitUsd.Value) { await WriteError(context, 429, "spend_limit", "سقف هزینه این کلید تمام شده است."); return; }
 
-            var credentials = await db.ProviderCredentials.Where(x => x.ProviderId == model.ProviderId && x.IsActive)
-                .OrderByDescending(x => (double)x.RemainingBalanceUsd > (double)x.AlertThresholdUsd).ThenBy(x => x.LastUsedAtUtc).ToListAsync(ct);
-            if (credentials.Count == 0) { await WriteError(context, 503, "provider_unavailable", "کلید فعالی برای ارائه‌دهنده تنظیم نشده است."); return; }
+            var credentials = await ActiveCredentials(model.ProviderId, ct);
+            if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
 
             var stream = body.RootElement.TryGetProperty("stream", out var streamProperty) && streamProperty.ValueKind == JsonValueKind.True;
             var stopwatch = Stopwatch.StartNew();
             HttpResponseMessage? upstream = null;
+            string? bufferedResponse = null;
             ProviderCredential? selected = null;
+            ProviderCredential? lastAttempt = null;
+            var failures = new List<ProviderFailure>();
             foreach (var credential in credentials)
             {
+                lastAttempt = credential;
                 try
                 {
                     upstream = await Send(model.Provider, credential, body.RootElement, stream, ct);
-                    selected = credential;
-                    if (upstream.IsSuccessStatusCode) break;
-                    var errorBody = $"{(int)upstream.StatusCode}: {await upstream.Content.ReadAsStringAsync(ct)}";
-                    credential.LastError = errorBody[..Math.Min(500, errorBody.Length)];
-                    if (upstream.StatusCode is not (HttpStatusCode.Unauthorized or HttpStatusCode.PaymentRequired or HttpStatusCode.TooManyRequests)) break;
+                    if (upstream.IsSuccessStatusCode)
+                    {
+                        if (!stream)
+                        {
+                            bufferedResponse = await upstream.Content.ReadAsStringAsync(ct);
+                            if (ProviderErrorMapper.TryClassifyInBand(bufferedResponse, out var applicationFailure) && applicationFailure is not null)
+                            {
+                                failures.Add(applicationFailure);
+                                ProviderErrorMapper.Apply(credential, applicationFailure);
+                                upstream.Dispose(); upstream = null; bufferedResponse = null;
+                                continue;
+                            }
+                        }
+                        selected = credential;
+                        break;
+                    }
+                    var errorBody = await upstream.Content.ReadAsStringAsync(ct);
+                    var failure = ProviderErrorMapper.Classify(upstream.StatusCode, errorBody);
+                    failures.Add(failure);
+                    ProviderErrorMapper.Apply(credential, failure);
+                    if (!failure.ShouldFailover) { selected = credential; break; }
                     upstream.Dispose(); upstream = null;
                 }
-                catch (Exception ex) { credential.LastError = ex.Message[..Math.Min(500, ex.Message.Length)]; logger.LogWarning(ex, "Provider key {CredentialId} failed", credential.Id); }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    upstream?.Dispose(); upstream = null;
+                    var failure = ProviderErrorMapper.Classify(ex);
+                    failures.Add(failure);
+                    ProviderErrorMapper.Apply(credential, failure);
+                    logger.LogWarning(ex, "Provider key {CredentialId} failed", credential.Id);
+                }
             }
-            if (upstream is null || selected is null) { await db.SaveChangesAsync(ct); await WriteError(context, 503, "provider_unavailable", "همه مسیرهای ارائه‌دهنده ناموفق بودند."); return; }
+            if (upstream is null || selected is null)
+            {
+                var terminalFailure = ProviderErrorMapper.MostRelevant(failures);
+                if (lastAttempt is not null) await Record(user, userKey, model, lastAttempt, 0, 0, 0, stopwatch.ElapsedMilliseconds, "failed", context.TraceIdentifier, CancellationToken.None);
+                else await db.SaveChangesAsync(CancellationToken.None);
+                await WriteProviderError(context, terminalFailure, model.Provider.Name);
+                return;
+            }
             using (upstream)
             {
                 if (!upstream.IsSuccessStatusCode)
                 {
-                    context.Response.StatusCode = (int)upstream.StatusCode;
-                    context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json";
-                    await upstream.Content.CopyToAsync(context.Response.Body, ct);
+                    var failure = failures.LastOrDefault() ?? ProviderErrorMapper.Classify(upstream.StatusCode, await upstream.Content.ReadAsStringAsync(ct));
                     await Record(user, userKey, model, selected, 0, 0, 0, stopwatch.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct);
+                    await WriteProviderError(context, failure, model.Provider.Name);
                     return;
                 }
 
                 long inputTokens = 0, outputTokens = 0;
+                ProviderFailure? streamFailure = null;
                 if (stream && model.Provider.Protocol == "openai")
                 {
                     context.Response.StatusCode = 200;
@@ -212,19 +370,34 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                     while (!reader.EndOfStream && !ct.IsCancellationRequested)
                     {
                         var line = await reader.ReadLineAsync(ct) ?? "";
+                        var hasSseData = TryGetSseData(line, out var ssePayload);
+                        if (hasSseData && ssePayload != "[DONE]"
+                            && ProviderErrorMapper.TryClassifyInBand(ssePayload, out var failure) && failure is not null)
+                        {
+                            streamFailure = failure;
+                            ProviderErrorMapper.Apply(selected, failure);
+                            await context.Response.WriteAsync($"data: {ProviderErrorMapper.PublicErrorJson(failure, model.Provider.Name)}\n\ndata: [DONE]\n\n", ct);
+                            await context.Response.Body.FlushAsync(ct);
+                            break;
+                        }
                         await context.Response.WriteAsync(line + "\n", ct);
                         await context.Response.Body.FlushAsync(ct);
-                        if (line.StartsWith("data: ") && line[6..] != "[DONE]") ParseUsage(line[6..], ref inputTokens, ref outputTokens);
+                        if (hasSseData && ssePayload != "[DONE]") ParseUsage(ssePayload, ref inputTokens, ref outputTokens);
                     }
                 }
                 else
                 {
-                    var responseText = await upstream.Content.ReadAsStringAsync(ct);
+                    var responseText = bufferedResponse ?? await upstream.Content.ReadAsStringAsync(ct);
                     ParseUsage(responseText, ref inputTokens, ref outputTokens, model.Provider.Protocol);
                     if (model.Provider.Protocol == "anthropic") responseText = ConvertAnthropicResponse(responseText, model.ModelId);
                     context.Response.StatusCode = 200;
                     context.Response.ContentType = "application/json; charset=utf-8";
                     await context.Response.WriteAsync(responseText, ct);
+                }
+                if (streamFailure is not null)
+                {
+                    await Record(user, userKey, model, selected, inputTokens, outputTokens, 0, stopwatch.ElapsedMilliseconds, "failed", context.TraceIdentifier, CancellationToken.None);
+                    return;
                 }
                 var cost = inputTokens / 1_000_000m * model.InputPricePerMillionUsd + outputTokens / 1_000_000m * model.OutputPricePerMillionUsd;
                 await Record(user, userKey, model, selected, inputTokens, outputTokens, cost, stopwatch.ElapsedMilliseconds, "success", context.TraceIdentifier, ct);
@@ -252,28 +425,31 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             if (!await CheckAccess(context, user, userKey, model, ct)) return;
 
             var credentials = await ActiveCredentials(model.ProviderId, ct);
-            if (credentials.Count == 0) { await WriteError(context, 503, "provider_unavailable", "کلید فعالی برای ارائه‌دهنده تنظیم نشده است."); return; }
+            if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
             var stream = body.RootElement.TryGetProperty("stream", out var streamProperty) && streamProperty.ValueKind == JsonValueKind.True;
             var started = Stopwatch.StartNew();
+            var failures = new List<ProviderFailure>();
+            ProviderCredential? lastAttempt = null;
             foreach (var credential in credentials)
             {
+                lastAttempt = credential;
                 try
                 {
                     using var upstream = await SendJson(model, credential, body.RootElement, ct);
                     if (!upstream.IsSuccessStatusCode)
                     {
                         var error = await upstream.Content.ReadAsStringAsync(ct);
-                        var credentialError = $"{(int)upstream.StatusCode}: {error}";
-                        credential.LastError = credentialError[..Math.Min(500, credentialError.Length)];
-                        if (upstream.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.PaymentRequired or HttpStatusCode.TooManyRequests) continue;
+                        var failure = ProviderErrorMapper.Classify(upstream.StatusCode, error);
+                        failures.Add(failure);
+                        ProviderErrorMapper.Apply(credential, failure);
+                        if (failure.ShouldFailover) continue;
                         await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct);
-                        context.Response.StatusCode = (int)upstream.StatusCode;
-                        context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json";
-                        await context.Response.WriteAsync(error, ct);
+                        await WriteProviderError(context, failure, model.Provider.Name);
                         return;
                     }
 
                     long inputTokens = 0, outputTokens = 0;
+                    ProviderFailure? streamFailure = null;
                     context.Response.StatusCode = 200;
                     context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? (stream ? "text/event-stream; charset=utf-8" : "application/json; charset=utf-8");
                     if (stream)
@@ -284,16 +460,37 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                         while (!reader.EndOfStream && !ct.IsCancellationRequested)
                         {
                             var line = await reader.ReadLineAsync(ct) ?? "";
+                            var hasSseData = TryGetSseData(line, out var ssePayload);
+                            if (hasSseData && ssePayload != "[DONE]"
+                                && ProviderErrorMapper.TryClassifyInBand(ssePayload, out var failure) && failure is not null)
+                            {
+                                streamFailure = failure;
+                                ProviderErrorMapper.Apply(credential, failure);
+                                await context.Response.WriteAsync($"data: {ProviderErrorMapper.PublicErrorJson(failure, model.Provider.Name)}\n\ndata: [DONE]\n\n", ct);
+                                await context.Response.Body.FlushAsync(ct);
+                                break;
+                            }
                             await context.Response.WriteAsync(line + "\n", ct);
                             await context.Response.Body.FlushAsync(ct);
-                            if (line.StartsWith("data: ") && line[6..] != "[DONE]") ParseUsage(line[6..], ref inputTokens, ref outputTokens);
+                            if (hasSseData && ssePayload != "[DONE]") ParseUsage(ssePayload, ref inputTokens, ref outputTokens);
                         }
                     }
                     else
                     {
                         var responseText = await upstream.Content.ReadAsStringAsync(ct);
+                        if (ProviderErrorMapper.TryClassifyInBand(responseText, out var applicationFailure) && applicationFailure is not null)
+                        {
+                            failures.Add(applicationFailure);
+                            ProviderErrorMapper.Apply(credential, applicationFailure);
+                            continue;
+                        }
                         ParseUsage(responseText, ref inputTokens, ref outputTokens);
                         await context.Response.WriteAsync(responseText, ct);
+                    }
+                    if (streamFailure is not null)
+                    {
+                        await Record(user, userKey, model, credential, inputTokens, outputTokens, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, CancellationToken.None);
+                        return;
                     }
                     var cost = EstimateTokenCost(model, inputTokens, outputTokens);
                     if (cost == 0 && model.ServiceType == "video_generation" && TryGetDecimal(body.RootElement, "seconds", out var seconds))
@@ -301,14 +498,18 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                     await Record(user, userKey, model, credential, inputTokens, outputTokens, cost, started.ElapsedMilliseconds, "success", context.TraceIdentifier, CancellationToken.None);
                     return;
                 }
-                catch (Exception ex)
+                catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
-                    credential.LastError = ex.Message[..Math.Min(500, ex.Message.Length)];
+                    var failure = ProviderErrorMapper.Classify(ex);
+                    failures.Add(failure);
+                    ProviderErrorMapper.Apply(credential, failure);
                     logger.LogWarning(ex, "JSON provider key {CredentialId} failed", credential.Id);
                 }
             }
-            await db.SaveChangesAsync(ct);
-            await WriteError(context, 503, "provider_unavailable", "همه مسیرهای ارائه‌دهنده ناموفق بودند.");
+            var terminalFailure = ProviderErrorMapper.MostRelevant(failures);
+            if (lastAttempt is not null) await Record(user, userKey, model, lastAttempt, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, CancellationToken.None);
+            else await db.SaveChangesAsync(CancellationToken.None);
+            await WriteProviderError(context, terminalFailure, model.Provider.Name);
         }
     }
 
@@ -323,7 +524,9 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
 
     private Task<List<ProviderCredential>> ActiveCredentials(Guid providerId, CancellationToken ct) =>
         db.ProviderCredentials.Where(x => x.ProviderId == providerId && x.IsActive)
-            .OrderByDescending(x => (double)x.RemainingBalanceUsd > (double)x.AlertThresholdUsd).ThenBy(x => x.LastUsedAtUtc).ToListAsync(ct);
+            .OrderBy(x => x.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode)
+            .ThenByDescending(x => (double)x.RemainingBalanceUsd > (double)x.AlertThresholdUsd)
+            .ThenBy(x => x.LastUsedAtUtc).ToListAsync(ct);
 
     private async Task<HttpResponseMessage> SendJson(AiModel model, ProviderCredential credential, JsonElement body, CancellationToken ct)
     {
@@ -495,7 +698,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             key.LastUsedAtUtc = DateTime.UtcNow;
             credential.RequestCount++;
             credential.LastUsedAtUtc = DateTime.UtcNow;
-            credential.LastError = null;
+            ProviderErrorMapper.Clear(credential);
             if (credential.InitialBalanceUsd > 0) credential.RemainingBalanceUsd = Math.Max(0, credential.RemainingBalanceUsd - cost);
         }
         db.UsageRecords.Add(new UsageRecord { UserId = user.Id, UserApiKeyId = key.Id, ModelId = model.Id, ProviderCredentialId = credential.Id, ModelName = model.ModelId, ProviderName = model.Provider!.Name, InputTokens = input, OutputTokens = output, CostUsd = cost, DurationMs = (int)Math.Min(int.MaxValue, durationMs), Status = status, TraceId = traceId });
@@ -509,7 +712,9 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         return key.AccessMode switch { "allow" => rules.Contains(model), "deny" => !rules.Contains(model), _ => true };
     }
 
-    private static async Task Relay(WebSocket source, WebSocket destination, Action<string>? inspect, CancellationToken ct)
+    private sealed record WebSocketRelayResult(WebSocketCloseStatus? CloseStatus, string? CloseDescription);
+
+    private static async Task<WebSocketRelayResult> Relay(WebSocket source, WebSocket destination, Func<string, string>? transform, CancellationToken ct)
     {
         var buffer = new byte[32 * 1024];
         while (!ct.IsCancellationRequested && source.State == WebSocketState.Open && destination.State == WebSocketState.Open)
@@ -519,13 +724,24 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             do
             {
                 result = await source.ReceiveAsync(buffer, ct);
-                if (result.MessageType == WebSocketMessageType.Close) return;
+                if (result.MessageType == WebSocketMessageType.Close)
+                    return new(result.CloseStatus, result.CloseStatusDescription);
                 message.Write(buffer, 0, result.Count);
             } while (!result.EndOfMessage);
             var bytes = message.ToArray();
-            if (result.MessageType == WebSocketMessageType.Text && inspect is not null) inspect(Encoding.UTF8.GetString(bytes));
+            if (result.MessageType == WebSocketMessageType.Text && transform is not null)
+                bytes = Encoding.UTF8.GetBytes(transform(Encoding.UTF8.GetString(bytes)));
             await destination.SendAsync(bytes, result.MessageType, true, ct);
         }
+        return new(null, null);
+    }
+
+    private static bool TryGetSseData(string line, out string payload)
+    {
+        payload = "";
+        if (!line.StartsWith("data:", StringComparison.Ordinal)) return false;
+        payload = line[5..].TrimStart();
+        return true;
     }
 
     private static void ParseRealtimeUsage(string json, ref long input, ref long output, ref long inputAudio, ref long outputAudio)
@@ -600,5 +816,12 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         context.Response.StatusCode = status;
         context.Response.ContentType = "application/json";
         await context.Response.WriteAsJsonAsync(new { error = new { message, type = code, code } });
+    }
+
+    private static async Task WriteProviderError(HttpContext context, ProviderFailure failure, string providerName)
+    {
+        context.Response.StatusCode = failure.PublicStatus;
+        context.Response.ContentType = "application/json; charset=utf-8";
+        await context.Response.WriteAsJsonAsync(ProviderErrorMapper.PublicError(failure, providerName));
     }
 }

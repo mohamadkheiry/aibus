@@ -84,6 +84,8 @@ public sealed class ProviderCredential
     public long RequestCount { get; set; }
     public DateTime? LastUsedAtUtc { get; set; }
     [MaxLength(500)] public string? LastError { get; set; }
+    [MaxLength(60)] public string? LastErrorCode { get; set; }
+    public DateTime? LastErrorAtUtc { get; set; }
 }
 
 public sealed class AiModel
