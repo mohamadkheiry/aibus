@@ -201,7 +201,10 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
             var user = await db.Users.SingleAsync(x => x.Mobile == SuperAdministrators.PrimaryMobile);
-            var model = await db.Models.FirstAsync();
+            var model = await db.Models
+                .Where(x => x.IsActive && x.Provider!.IsActive)
+                .OrderBy(x => x.ModelId)
+                .FirstAsync();
             var key = new UserApiKey
             {
                 UserId = user.Id,
