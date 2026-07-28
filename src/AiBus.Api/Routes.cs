@@ -30,7 +30,7 @@ public static class Routes
             await db.SaveChangesAsync(ct);
             var sent = await sms.SendOtp(mobile, code, ct);
             var expose = (app.Environment.IsDevelopment() && config.GetValue("Development:ExposeOtp", false))
-                || (mobile == "09015909044" && config.GetValue("Bootstrap:ExposeSuperAdminOtp", false));
+                || (SuperAdministrators.Includes(mobile) && config.GetValue("Bootstrap:ExposeSuperAdminOtp", false));
             return Results.Ok(new { message = sent ? "کد ورود ارسال شد." : "سرویس پیامک تنظیم نشده؛ حالت توسعه فعال است.", expiresIn = 120, debugCode = expose ? code : null });
         }).AllowAnonymous();
 
@@ -46,9 +46,10 @@ public static class Routes
             var user = await db.Users.SingleOrDefaultAsync(x => x.Mobile == mobile, ct);
             if (user is null)
             {
-                user = new AppUser { Mobile = mobile, Role = mobile == "09015909044" ? Roles.SuperAdmin : Roles.User, DisplayName = mobile == "09015909044" ? "سوپر ادمین" : $"کاربر {mobile[^4..]}" };
+                user = new AppUser { Mobile = mobile, DisplayName = $"کاربر {mobile[^4..]}" };
                 db.Users.Add(user);
             }
+            SuperAdministrators.EnsureRole(user);
             if (user.IsSuspended) return Results.Json(new { message = "حساب شما تعلیق شده است." }, statusCode: 403);
             user.LastSeenAtUtc = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
@@ -244,10 +245,10 @@ public static class Routes
 
         admin.MapGet("/users", async (AppDbContext db, [FromQuery] string? search, [FromQuery] string? sort, CancellationToken ct) => { var q = db.Users.AsNoTracking().Include(x => x.ApiKeys).AsQueryable(); if (!string.IsNullOrWhiteSpace(search)) q = q.Where(x => x.Mobile.Contains(search) || x.DisplayName.Contains(search)); q = sort switch { "wallet" => q.OrderByDescending(x => (double)x.WalletUsd), "requests" => q.OrderByDescending(x => x.ApiKeys.Sum(k => k.RequestCount)), _ => q.OrderByDescending(x => x.CreatedAtUtc) }; return Results.Ok(await q.Select(x => new { x.Id, x.Mobile, x.DisplayName, x.Role, x.IsSuspended, x.WalletUsd, x.CreatedAtUtc, x.LastSeenAtUtc, apiKeyCount = x.ApiKeys.Count, requests = x.ApiKeys.Sum(k => k.RequestCount), spentUsd = x.ApiKeys.Sum(k => (double)k.SpentUsd) }).ToListAsync(ct)); });
         admin.MapGet("/users/{id:guid}/keys", async (Guid id, AppDbContext db, CancellationToken ct) => Results.Ok(await db.UserApiKeys.AsNoTracking().Where(x => x.UserId == id).OrderByDescending(x => x.CreatedAtUtc).Select(x => new { x.Id, x.Name, x.KeyPrefix, x.IsActive, x.RequestLimit, x.SpendLimitUsd, x.RequestCount, x.SpentUsd, x.AccessMode, x.ModelRulesJson, x.CreatedAtUtc, x.LastUsedAtUtc }).ToListAsync(ct)));
-        admin.MapPost("/users/{id:guid}/suspend", async (Guid id, SuspendRequest req, AppDbContext db, CancellationToken ct) => { var u = await db.Users.FindAsync([id], ct); if (u is null) return Results.NotFound(); if (u.Mobile == "09015909044") return Results.BadRequest(new { message = "سوپرادمین قابل تعلیق نیست." }); u.IsSuspended = req.IsSuspended; await db.SaveChangesAsync(ct); return Results.NoContent(); });
+        admin.MapPost("/users/{id:guid}/suspend", async (Guid id, SuspendRequest req, AppDbContext db, CancellationToken ct) => { var u = await db.Users.FindAsync([id], ct); if (u is null) return Results.NotFound(); if (u.Role == Roles.SuperAdmin) return Results.BadRequest(new { message = "سوپرادمین قابل تعلیق نیست." }); u.IsSuspended = req.IsSuspended; await db.SaveChangesAsync(ct); return Results.NoContent(); });
         admin.MapPost("/user-keys/{id:guid}/suspend", async (Guid id, SuspendRequest req, AppDbContext db, CancellationToken ct) => { var key = await db.UserApiKeys.FindAsync([id], ct); if (key is null) return Results.NotFound(); key.IsActive = !req.IsSuspended; await db.SaveChangesAsync(ct); return Results.NoContent(); });
         admin.MapDelete("/user-keys/{id:guid}", async (Guid id, AppDbContext db, CancellationToken ct) => { var key = await db.UserApiKeys.FindAsync([id], ct); if (key is null) return Results.NotFound(); db.UserApiKeys.Remove(key); await db.SaveChangesAsync(ct); return Results.NoContent(); });
-        admin.MapDelete("/users/{id:guid}", async (Guid id, AppDbContext db, CancellationToken ct) => { var user = await db.Users.Include(x => x.ApiKeys).SingleOrDefaultAsync(x => x.Id == id, ct); if (user is null) return Results.NotFound(); if (user.Mobile == "09015909044") return Results.BadRequest(new { message = "سوپرادمین قابل حذف نیست." }); db.Users.Remove(user); await db.SaveChangesAsync(ct); return Results.NoContent(); });
+        admin.MapDelete("/users/{id:guid}", async (Guid id, AppDbContext db, CancellationToken ct) => { var user = await db.Users.Include(x => x.ApiKeys).SingleOrDefaultAsync(x => x.Id == id, ct); if (user is null) return Results.NotFound(); if (user.Role == Roles.SuperAdmin) return Results.BadRequest(new { message = "سوپرادمین قابل حذف نیست." }); db.Users.Remove(user); await db.SaveChangesAsync(ct); return Results.NoContent(); });
         admin.MapPost("/users/{id:guid}/wallet", async (Guid id, WalletAdjustRequest req, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, CancellationToken ct) => { var u = await db.Users.FindAsync([id], ct); if (u is null) return Results.NotFound(); if (u.WalletUsd + req.AmountUsd < 0) return Results.BadRequest(new { message = "موجودی نمی‌تواند منفی شود." }); u.WalletUsd += req.AmountUsd; db.WalletTransactions.Add(new WalletTransaction { UserId = id, Type = "admin_adjustment", AmountUsd = req.AmountUsd, Status = "completed", Description = req.Description, CompletedAtUtc = DateTime.UtcNow }); db.AuditLogs.Add(new AuditLog { ActorUserId = actor.UserId(), Action = "wallet.adjust", EntityType = "user", EntityId = id.ToString(), DetailsJson = JsonSerializer.Serialize(req) }); await db.SaveChangesAsync(ct); return Results.Ok(new { u.WalletUsd }); });
         admin.MapPost("/users/{id:guid}/impersonate", async (Guid id, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, TokenService tokens, CancellationToken ct) => { var u = await db.Users.FindAsync([id], ct); return u is null ? Results.NotFound() : Results.Ok(new { token = tokens.Create(u, actor.UserId()), user = UserView(u) }); });
 

@@ -48,8 +48,16 @@ public static class SeedData
             """);
         await EnsureUserApiKeyColumns(db);
         await EnsureModelCatalogColumns(db);
-        if (!await db.Users.AnyAsync(x => x.Mobile == "09015909044"))
-            db.Users.Add(new AppUser { Mobile = "09015909044", DisplayName = "سوپر ادمین", Role = Roles.SuperAdmin });
+        foreach (var mobile in SuperAdministrators.Mobiles)
+        {
+            var administrator = await db.Users.SingleOrDefaultAsync(x => x.Mobile == mobile);
+            if (administrator is null)
+            {
+                administrator = new AppUser { Mobile = mobile, DisplayName = SuperAdministrators.DisplayName };
+                db.Users.Add(administrator);
+            }
+            SuperAdministrators.EnsureRole(administrator);
+        }
 
         var defaults = new Dictionary<string, string>
         {

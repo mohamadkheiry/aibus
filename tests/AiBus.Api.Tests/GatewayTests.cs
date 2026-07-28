@@ -35,6 +35,32 @@ public sealed class TestAppFactory : WebApplicationFactory<Program>
     }
 }
 
+public sealed class BootstrapOtpFactory : WebApplicationFactory<Program>
+{
+    private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"aibus-bootstrap-tests-{Guid.NewGuid():N}.db");
+
+    protected override void ConfigureWebHost(IWebHostBuilder builder)
+    {
+        builder.UseEnvironment("Production");
+        builder.UseSetting("Jwt:Key", "aibus-bootstrap-integration-test-key-at-least-32-characters");
+        builder.UseSetting("Bootstrap:ExposeSuperAdminOtp", "true");
+        builder.UseSetting("Development:ExposeOtp", "false");
+        builder.ConfigureLogging(logging => logging.ClearProviders());
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<DbContextOptions<AppDbContext>>();
+            services.RemoveAll<AppDbContext>();
+            services.AddDbContext<AppDbContext>(o => o.UseSqlite($"Data Source={_dbPath}"));
+        });
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        try { if (File.Exists(_dbPath)) File.Delete(_dbPath); } catch (IOException) { /* OS releases SQLite WAL shortly after host shutdown. */ }
+    }
+}
+
 public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestAppFactory>
 {
     private readonly HttpClient _client = factory.CreateClient();
@@ -80,14 +106,90 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
     }
 
     [Fact]
+    public async Task Production_bootstrap_otp_is_exposed_only_for_configured_super_admins()
+    {
+        using var bootstrapFactory = new BootstrapOtpFactory();
+        using var bootstrapClient = bootstrapFactory.CreateClient();
+
+        foreach (var mobile in SuperAdministrators.Mobiles)
+        {
+            var response = await bootstrapClient.PostAsJsonAsync("/api/auth/request-otp", new { mobile });
+            response.EnsureSuccessStatusCode();
+            var otp = await response.Content.ReadFromJsonAsync<OtpResponse>();
+            Assert.NotNull(otp?.DebugCode);
+        }
+
+        var ordinaryResponse = await bootstrapClient.PostAsJsonAsync("/api/auth/request-otp", new { mobile = "09120000000" });
+        ordinaryResponse.EnsureSuccessStatusCode();
+        var ordinaryOtp = await ordinaryResponse.Content.ReadFromJsonAsync<OtpResponse>();
+        Assert.Null(ordinaryOtp?.DebugCode);
+    }
+
+    [Fact]
+    public async Task Additional_super_admin_is_promoted_on_startup_and_cannot_be_suspended_or_deleted()
+    {
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var administrator = await db.Users.SingleAsync(x => x.Mobile == SuperAdministrators.AdditionalMobile);
+            administrator.Role = Roles.User;
+            administrator.IsSuspended = true;
+            administrator.DisplayName = "کاربر 9381";
+            await db.SaveChangesAsync();
+
+            await SeedData.Initialize(db);
+
+            Assert.Equal(Roles.SuperAdmin, administrator.Role);
+            Assert.False(administrator.IsSuspended);
+            Assert.Equal(SuperAdministrators.DisplayName, administrator.DisplayName);
+            Assert.Equal(
+                SuperAdministrators.Mobiles.Count,
+                await db.Users.CountAsync(x => x.Role == Roles.SuperAdmin && SuperAdministrators.Mobiles.Contains(x.Mobile)));
+        }
+
+        var otpResponse = await _client.PostAsJsonAsync("/api/auth/request-otp", new { mobile = SuperAdministrators.AdditionalMobile });
+        otpResponse.EnsureSuccessStatusCode();
+        var otp = await otpResponse.Content.ReadFromJsonAsync<OtpResponse>();
+        Assert.NotNull(otp?.DebugCode);
+
+        var loginResponse = await _client.PostAsJsonAsync("/api/auth/verify-otp", new
+        {
+            mobile = SuperAdministrators.AdditionalMobile,
+            code = otp!.DebugCode
+        });
+        loginResponse.EnsureSuccessStatusCode();
+        var login = await loginResponse.Content.ReadFromJsonAsync<LoginResponse>();
+        Assert.Equal(Roles.SuperAdmin, login?.User.Role);
+
+        using (var suspendRequest = Authorized(
+                   HttpMethod.Post,
+                   $"/api/admin/users/{login!.User.Id}/suspend",
+                   login.Token,
+                   new { isSuspended = true }))
+        {
+            var suspendResponse = await _client.SendAsync(suspendRequest);
+            Assert.Equal(HttpStatusCode.BadRequest, suspendResponse.StatusCode);
+        }
+
+        using (var deleteRequest = Authorized(
+                   HttpMethod.Delete,
+                   $"/api/admin/users/{login.User.Id}",
+                   login.Token))
+        {
+            var deleteResponse = await _client.SendAsync(deleteRequest);
+            Assert.Equal(HttpStatusCode.BadRequest, deleteResponse.StatusCode);
+        }
+    }
+
+    [Fact]
     public async Task Super_admin_can_login_with_development_otp()
     {
-        var otp = await _client.PostAsJsonAsync("/api/auth/request-otp", new { mobile = "09015909044" });
+        var otp = await _client.PostAsJsonAsync("/api/auth/request-otp", new { mobile = SuperAdministrators.PrimaryMobile });
         otp.EnsureSuccessStatusCode();
         var requested = await otp.Content.ReadFromJsonAsync<OtpResponse>();
         Assert.NotNull(requested?.DebugCode);
 
-        var verify = await _client.PostAsJsonAsync("/api/auth/verify-otp", new { mobile = "09015909044", code = requested!.DebugCode });
+        var verify = await _client.PostAsJsonAsync("/api/auth/verify-otp", new { mobile = SuperAdministrators.PrimaryMobile, code = requested!.DebugCode });
         verify.EnsureSuccessStatusCode();
         var result = await verify.Content.ReadFromJsonAsync<LoginResponse>();
         Assert.False(string.IsNullOrWhiteSpace(result?.Token));
@@ -98,7 +200,7 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var user = await db.Users.SingleAsync(x => x.Mobile == "09015909044");
+            var user = await db.Users.SingleAsync(x => x.Mobile == SuperAdministrators.PrimaryMobile);
             var model = await db.Models.FirstAsync();
             var key = new UserApiKey
             {
@@ -239,10 +341,10 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
         var ticketId = created.RootElement.GetProperty("id").GetString();
         Assert.False(string.IsNullOrWhiteSpace(ticketId));
 
-        var adminOtpResponse = await _client.PostAsJsonAsync("/api/auth/request-otp", new { mobile = "09015909044" });
+        var adminOtpResponse = await _client.PostAsJsonAsync("/api/auth/request-otp", new { mobile = SuperAdministrators.PrimaryMobile });
         adminOtpResponse.EnsureSuccessStatusCode();
         var adminOtp = await adminOtpResponse.Content.ReadFromJsonAsync<OtpResponse>();
-        var adminLoginResponse = await _client.PostAsJsonAsync("/api/auth/verify-otp", new { mobile = "09015909044", code = adminOtp!.DebugCode });
+        var adminLoginResponse = await _client.PostAsJsonAsync("/api/auth/verify-otp", new { mobile = SuperAdministrators.PrimaryMobile, code = adminOtp!.DebugCode });
         adminLoginResponse.EnsureSuccessStatusCode();
         var adminLogin = await adminLoginResponse.Content.ReadFromJsonAsync<LoginResponse>();
 

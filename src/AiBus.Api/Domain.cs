@@ -8,6 +8,30 @@ public static class Roles
     public const string User = "User";
 }
 
+public static class SuperAdministrators
+{
+    public const string PrimaryMobile = "09015909044";
+    public const string AdditionalMobile = "09198909381";
+    public const string DisplayName = "سوپر ادمین";
+
+    public static IReadOnlyList<string> Mobiles { get; } =
+        Array.AsReadOnly(new[] { PrimaryMobile, AdditionalMobile });
+
+    public static bool Includes(string? mobile) =>
+        mobile is not null && Mobiles.Contains(mobile, StringComparer.Ordinal);
+
+    public static void EnsureRole(AppUser user)
+    {
+        if (!Includes(user.Mobile)) return;
+
+        user.Role = Roles.SuperAdmin;
+        user.IsSuspended = false;
+        if (string.IsNullOrWhiteSpace(user.DisplayName)
+            || user.DisplayName.StartsWith("کاربر ", StringComparison.Ordinal))
+            user.DisplayName = DisplayName;
+    }
+}
+
 public sealed class AppUser
 {
     public Guid Id { get; set; } = Guid.NewGuid();
