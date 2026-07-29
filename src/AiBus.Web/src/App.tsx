@@ -128,15 +128,41 @@ function Landing({onLogin}:{onLogin:()=>void}){
   const providers=[['OA','OpenAI'],['G','Gemini'],['AI','Anthropic'],['DS','DeepSeek'],['X','xAI'],['Q','Qwen'],['M','Mistral'],['K','Kimi'],['GL','GLM'],['11','ElevenLabs'],['DG','Deepgram'],['C','Cohere']]
   const currentYear=new Date().getFullYear()
   const [mobileMenuOpen,setMobileMenuOpen]=useState(false)
+  const landingNavRef=useRef<HTMLElement>(null)
+  const mobileMenuToggleRef=useRef<HTMLButtonElement>(null)
+  useEffect(()=>{
+    const mobileBreakpoint=window.matchMedia('(max-width: 1150px)')
+    const closeOnDesktop=(event:MediaQueryListEvent)=>{if(!event.matches)setMobileMenuOpen(false)}
+    mobileBreakpoint.addEventListener('change',closeOnDesktop)
+    return ()=>mobileBreakpoint.removeEventListener('change',closeOnDesktop)
+  },[])
+  useEffect(()=>{
+    if(!mobileMenuOpen)return
+    const closeOnEscape=(event:KeyboardEvent)=>{
+      if(event.key!=='Escape')return
+      setMobileMenuOpen(false)
+      mobileMenuToggleRef.current?.focus()
+    }
+    const closeOnOutsidePointer=(event:PointerEvent)=>{
+      const target=event.target
+      if(target instanceof Node&&!landingNavRef.current?.contains(target))setMobileMenuOpen(false)
+    }
+    document.addEventListener('keydown',closeOnEscape)
+    document.addEventListener('pointerdown',closeOnOutsidePointer)
+    return ()=>{
+      document.removeEventListener('keydown',closeOnEscape)
+      document.removeEventListener('pointerdown',closeOnOutsidePointer)
+    }
+  },[mobileMenuOpen])
   const copyQuickStart=async()=>{try{await navigator.clipboard.writeText(`curl https://aibus.00f.ir/v1/chat/completions \\\n  -H "Authorization: Bearer aibus_..." \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"your-model-id","messages":[{"role":"user","content":"سلام"}]}'`);toast.success('نمونه کد کپی شد')}catch{toast.error('کپی خودکار ممکن نبود')}}
   return <div className="lp-page">
     <a className="lp-skip" href="#landing-main">پرش به محتوای اصلی</a>
     <div className="lp-ambient lp-ambient-a" aria-hidden="true"/><div className="lp-ambient lp-ambient-b" aria-hidden="true"/>
     <header className="lp-header">
-      <nav className="lp-nav" aria-label="ناوبری اصلی">
+      <nav ref={landingNavRef} className="lp-nav" aria-label="ناوبری اصلی">
         <a href="#landing-main" className="lp-logo-link" aria-label="AiBus، صفحه اصلی"><Logo/></a>
         <div className="lp-nav-links"><a href="#capabilities">قابلیت‌ها</a><a href="#providers">مدل‌ها</a><a href="#workflow">نحوه اتصال</a><a href="#security">امنیت</a></div>
-        <div className="lp-nav-actions"><button type="button" className="lp-login" onClick={onLogin}>ورود</button><button type="button" className="lp-primary lp-nav-cta" onClick={onLogin}>ساخت کلید API <ArrowLeft aria-hidden="true"/></button><button type="button" className="lp-menu-toggle" aria-label={mobileMenuOpen?'بستن منوی صفحه':'بازکردن منوی صفحه'} aria-expanded={mobileMenuOpen} aria-controls="lp-mobile-menu" onClick={()=>setMobileMenuOpen(open=>!open)}>{mobileMenuOpen?<X/>:<Menu/>}</button></div>
+        <div className="lp-nav-actions"><button type="button" className="lp-login" onClick={onLogin}>ورود</button><button type="button" className="lp-primary lp-nav-cta" onClick={onLogin}>ساخت کلید API <ArrowLeft aria-hidden="true"/></button><button ref={mobileMenuToggleRef} type="button" className="lp-menu-toggle" aria-label={mobileMenuOpen?'بستن منوی صفحه':'بازکردن منوی صفحه'} aria-expanded={mobileMenuOpen} aria-controls="lp-mobile-menu" onClick={()=>setMobileMenuOpen(open=>!open)}>{mobileMenuOpen?<X/>:<Menu/>}</button></div>
         {mobileMenuOpen&&<div className="lp-mobile-nav" id="lp-mobile-menu"><a href="#capabilities" onClick={()=>setMobileMenuOpen(false)}>قابلیت‌ها</a><a href="#providers" onClick={()=>setMobileMenuOpen(false)}>مدل‌ها</a><a href="#workflow" onClick={()=>setMobileMenuOpen(false)}>نحوه اتصال</a><a href="#security" onClick={()=>setMobileMenuOpen(false)}>امنیت</a><button type="button" onClick={()=>{setMobileMenuOpen(false);onLogin()}}>ورود به پنل <ArrowLeft/></button></div>}
       </nav>
     </header>

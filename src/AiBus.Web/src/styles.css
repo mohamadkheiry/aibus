@@ -161,3 +161,22 @@ input[dir=ltr],textarea[dir=ltr],code[dir=ltr],pre[dir=ltr],small[dir=ltr]{direc
 @media(max-width:450px){.lp-product-stage{height:350px}.lp-mobile-console{top:4px}.lp-mobile-kpis{padding:9px}.lp-mobile-chart{height:94px}.lp-mobile-route{height:42px;margin-block:5px}.lp-mobile-console>footer{height:29px}}
 @media(min-width:761px) and (max-width:1150px) and (max-height:700px){.lp-hero{padding-top:38px}.lp-product-stage{height:455px}.lp-console{top:8px;transform:translateX(-50%) scale(.88);transform-origin:top center}.lp-route-card{bottom:0}}
 @media(prefers-reduced-motion:reduce){.lp-page{scroll-behavior:auto}.lp-page *,.lp-page *:before,.lp-page *:after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important}}
+
+/* Mobile polish: short viewports, notches and readable product previews */
+.lp-header{padding-top:env(safe-area-inset-top)}
+.lp-mobile-nav{max-height:calc(100dvh - 70px - env(safe-area-inset-top));overflow-y:auto;overscroll-behavior:contain}
+@media(max-width:760px){
+  .lp-hero,.lp-trust,.lp-section,.lp-workflow,.lp-security,.lp-final,.lp-footer{width:auto;margin-left:max(14px,env(safe-area-inset-left));margin-right:max(14px,env(safe-area-inset-right))}
+  .lp-hero h1{letter-spacing:-.4px}
+  .lp-mobile-kpis small{font-size:10px}.lp-mobile-chart small{font-size:9px}.lp-mobile-route>span,.lp-mobile-route>b,.lp-mobile-console>footer{font-size:9px}
+  .lp-trust,.lp-section,.lp-workflow,.lp-security{scroll-margin-top:calc(84px + env(safe-area-inset-top))}
+  .login-page{min-height:100dvh;padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left)}
+  .login-back{min-height:44px;font-size:10px;top:max(14px,env(safe-area-inset-top));left:max(14px,env(safe-area-inset-left))}
+}
+@media(max-width:760px) and (orientation:landscape) and (max-height:500px){
+  .lp-nav{height:60px}.lp-mobile-nav{max-height:calc(100dvh - 60px - env(safe-area-inset-top))}
+  .lp-hero{padding-top:24px;padding-bottom:22px}.lp-hero h1{font-size:32px;line-height:1.35}.lp-hero-copy>p{max-width:590px}
+  .lp-hero-actions{flex-direction:row}.lp-hero-actions>*{width:auto;flex:1}.lp-proof{margin-top:18px}
+  .lp-product-stage{height:286px;margin-top:14px}.lp-mobile-console>header{height:40px}.lp-mobile-kpis{padding:7px}.lp-mobile-kpis>div{min-height:49px;padding:7px}.lp-mobile-kpis b{margin-top:4px}.lp-mobile-chart{height:78px}.lp-mobile-chart svg{height:56px}.lp-mobile-route{height:34px;margin-block:4px}.lp-mobile-console>footer{height:27px}
+  .lp-section{padding-top:66px}.lp-workflow{margin-top:38px}.lp-security{margin-top:62px}
+}
