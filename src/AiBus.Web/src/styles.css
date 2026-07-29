@@ -180,3 +180,146 @@ input[dir=ltr],textarea[dir=ltr],code[dir=ltr],pre[dir=ltr],small[dir=ltr]{direc
   .lp-product-stage{height:286px;margin-top:14px}.lp-mobile-console>header{height:40px}.lp-mobile-kpis{padding:7px}.lp-mobile-kpis>div{min-height:49px;padding:7px}.lp-mobile-kpis b{margin-top:4px}.lp-mobile-chart{height:78px}.lp-mobile-chart svg{height:56px}.lp-mobile-route{height:34px;margin-block:4px}.lp-mobile-console>footer{height:27px}
   .lp-section{padding-top:66px}.lp-workflow{margin-top:38px}.lp-security{margin-top:62px}
 }
+
+/* Responsive application workspace */
+.mobile-page-title,.ticket-mobile-back{display:none}
+.app-shell,.app-shell .main,.app-shell .content,.app-shell .card,.app-shell .page-head>div,.app-shell .card-head>div{min-width:0}
+.app-shell{min-height:100dvh}
+.app-shell .main{min-height:100dvh}
+.app-shell .table-scroll{max-width:100%;overscroll-behavior-inline:contain;-webkit-overflow-scrolling:touch;scrollbar-width:thin;scrollbar-color:var(--faint) transparent}
+.app-shell .table-scroll::-webkit-scrollbar{height:6px}.app-shell .table-scroll::-webkit-scrollbar-thumb{background:var(--faint);border-radius:10px}
+.app-shell .model-card,.app-shell .provider-card,.app-shell .model-card>header>div:nth-child(2),.app-shell .provider-card>header>div:nth-child(2),.app-shell .mini-model,.app-shell .mini-model>span,.app-shell .admin-model-list>div>div,.app-shell .credential-head,.app-shell .provider-identity,.app-shell .credential-main,.app-shell .credential-manage-identity>span{min-width:0}
+.app-shell .model-card h3,.app-shell .provider-card h3,.app-shell .model-card code,.app-shell .provider-card code,.app-shell .mini-model b,.app-shell .admin-model-list b{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+@media(max-width:980px){
+  .app-shell .sidebar{height:100dvh;width:min(290px,calc(100vw - 22px));padding-top:max(24px,calc(env(safe-area-inset-top) + 18px));padding-right:max(18px,env(safe-area-inset-right));padding-bottom:max(20px,calc(env(safe-area-inset-bottom) + 14px));visibility:hidden;pointer-events:none;transition:transform .25s,visibility 0s linear .25s}
+  .app-shell .sidebar.open{visibility:visible;pointer-events:auto;transition:transform .25s,visibility 0s}
+  .app-shell .sidebar nav{min-height:0;overscroll-behavior:contain}
+  .app-shell .side-close{top:max(14px,env(safe-area-inset-top));left:max(14px,env(safe-area-inset-left))}
+  .app-shell .topbar{height:calc(68px + env(safe-area-inset-top));padding-top:env(safe-area-inset-top);padding-right:max(20px,env(safe-area-inset-right));padding-left:max(20px,env(safe-area-inset-left))}
+  .app-shell .content{padding-right:max(20px,env(safe-area-inset-right));padding-left:max(20px,env(safe-area-inset-left));padding-bottom:max(40px,calc(env(safe-area-inset-bottom) + 28px));outline:0}
+  .mobile-page-title{display:block;min-width:0;max-width:min(38vw,260px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text);font-size:13px;font-weight:750}
+  .app-shell .icon-btn,.app-shell .side-close,.app-shell .row-actions .icon-btn,.app-shell .input-with-action button{width:44px;height:44px;min-width:44px;min-height:44px}
+  .app-shell .primary-btn,.app-shell .ghost-btn,.app-shell .pay-btn,.app-shell .compact,.app-shell .link-btn,.app-shell .source-link,.app-shell .status-pill,.app-shell .model-card>footer a,.app-shell .provider-tabs button,.app-shell .amount-presets button,.app-shell .pagination button,.app-shell .settings-nav button,.app-shell .ticket-toolbar select,.app-shell .ticket-admin-controls select,.app-shell .ticket-composer .primary-btn,.app-shell .code-recipes>nav button,.app-shell .json-field>header button,.app-shell .source-endpoint summary,.app-shell .advanced-json>summary,.app-shell .model-selector label,.app-shell .unlimited-control{min-height:44px}
+  .app-shell input:not([type=checkbox]):not([type=radio]):not([type=file]),.app-shell textarea,.app-shell select{font-size:16px}
+  .app-shell .modal-layer{padding-top:max(12px,env(safe-area-inset-top));padding-right:max(12px,env(safe-area-inset-right));padding-bottom:max(12px,env(safe-area-inset-bottom));padding-left:max(12px,env(safe-area-inset-left))}
+  .app-shell .modal{max-height:calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 24px)}
+  .app-shell .settings-content{min-width:0}
+}
+
+@media(max-width:760px){
+  .app-shell{overflow-x:clip}
+  .app-shell .topbar{height:calc(64px + env(safe-area-inset-top));padding-right:max(12px,env(safe-area-inset-right));padding-left:max(12px,env(safe-area-inset-left));gap:8px}
+  .app-shell .content{padding-top:20px;padding-right:max(13px,env(safe-area-inset-right));padding-left:max(13px,env(safe-area-inset-left));padding-bottom:max(34px,calc(env(safe-area-inset-bottom) + 24px))}
+  .mobile-page-title{flex:1;max-width:none;font-size:12px}
+  .app-shell .top-actions{flex:none}.app-shell .profile{display:none}
+
+  .app-shell .icon-btn,.app-shell .side-close,.app-shell .row-actions .icon-btn,.app-shell .input-with-action button{width:44px;height:44px;min-width:44px;min-height:44px}
+  .app-shell .side-close{display:grid}
+  .app-shell .primary-btn,.app-shell .ghost-btn,.app-shell .pay-btn,.app-shell .compact,.app-shell .link-btn,.app-shell .source-link,.app-shell .status-pill,.app-shell .model-card>footer a,.app-shell .provider-tabs button,.app-shell .amount-presets button,.app-shell .pagination button,.app-shell .settings-nav button,.app-shell .ticket-toolbar select,.app-shell .ticket-admin-controls select,.app-shell .ticket-composer .primary-btn,.app-shell .code-recipes>nav button,.app-shell .json-field>header button,.app-shell .source-endpoint summary,.app-shell .advanced-json>summary,.app-shell .model-selector label,.app-shell .unlimited-control{min-height:44px}
+  .app-shell .row-actions,.app-shell .key-actions,.app-shell .credential-actions{gap:8px}
+  .app-shell .toggle{position:relative;width:42px;height:24px;flex:none}
+  .app-shell .toggle:before{content:"";position:absolute;inset:-10px -2px}
+
+  .app-shell input:not([type=checkbox]):not([type=radio]):not([type=file]),.app-shell textarea,.app-shell select,.login-page input:not([type=checkbox]):not([type=radio]):not([type=file]),.login-page textarea,.login-page select{font-size:16px}
+  .app-shell .field input,.app-shell .field select,.app-shell .filter-row select,.app-shell .date-filter{min-height:48px}
+  .app-shell .search-box{height:48px;min-width:0}.app-shell .search-box input,.app-shell .amount-input input{height:100%;min-height:44px;font-size:16px}
+  .app-shell .input-with-action input{padding-left:54px}.app-shell .input-with-action button{top:2px;left:2px}
+
+  .app-shell .page-head{gap:14px;margin-bottom:20px}.app-shell .page-head h1{font-size:23px;line-height:1.5}.app-shell .page-head p{font-size:11px;line-height:1.85}
+  .app-shell .head-actions{display:flex;flex-wrap:wrap;overflow:visible;gap:8px}.app-shell .head-actions>*{flex:0 1 auto}
+  .app-shell .card{padding:16px}.app-shell .table-card{padding:0}
+  .app-shell .card-head{align-items:flex-start;flex-wrap:wrap;gap:10px}.app-shell .card-head h3{font-size:14px;line-height:1.6}.app-shell .card-head p{font-size:10px;line-height:1.7}.app-shell .legend{flex-wrap:wrap}
+  .app-shell .security-banner,.app-shell .alert-banner,.app-shell .price-notice{align-items:flex-start;flex-wrap:wrap;padding:14px;gap:11px}
+  .app-shell .security-banner>div,.app-shell .alert-banner>div:not(.alert-icon),.app-shell .price-notice>div{min-width:0;flex:1}
+  .app-shell .security-banner p,.app-shell .alert-banner p,.app-shell .price-notice p{font-size:10px;line-height:1.85;overflow-wrap:anywhere}
+  .app-shell .alert-banner .ghost-btn{width:100%;margin:0}
+
+  .app-shell .modal-layer{place-items:end center;padding-top:max(8px,env(safe-area-inset-top));padding-right:max(8px,env(safe-area-inset-right));padding-bottom:0;padding-left:max(8px,env(safe-area-inset-left))}
+  .app-shell .modal{width:100%;max-height:calc(100dvh - env(safe-area-inset-top) - 8px);overflow-x:hidden;overflow-y:auto;overscroll-behavior:contain;border-radius:20px 20px 0 0}
+  .app-shell .modal.wide,.app-shell .media-lab-modal{width:100%}
+  .app-shell .modal>header{min-height:68px;padding:13px 14px;gap:12px}.app-shell .modal>header>div{min-width:0}.app-shell .modal>header .icon-btn{flex:none}.app-shell .modal h3{font-size:15px;line-height:1.65;overflow-wrap:anywhere}.app-shell .modal header p{font-size:10px;line-height:1.65;overflow-wrap:anywhere}
+  .app-shell .modal-body{padding:14px 14px max(16px,calc(env(safe-area-inset-bottom) + 12px))}
+  .app-shell .modal-actions{flex-wrap:wrap;gap:8px}.app-shell .modal-actions>*{flex:1 1 140px;min-width:0;white-space:normal;text-align:center}
+
+  .app-shell .table-card{overflow:hidden}.app-shell .table-scroll{position:relative;isolation:isolate}
+  .app-shell .table-scroll table{width:max-content;min-width:100%}
+  .app-shell .table-scroll th:first-child,.app-shell .table-scroll td:first-child{position:sticky;right:0;z-index:2;background:var(--surface)}
+  .app-shell .table-scroll th:last-child,.app-shell .table-scroll td:last-child{position:sticky;left:0;z-index:2;background:var(--surface);box-shadow:6px 0 14px rgba(0,0,0,.08)}
+  .app-shell .table-scroll th:first-child,.app-shell .table-scroll th:last-child{z-index:3;background:var(--surface2)}
+  .app-shell .table-scroll td{height:58px;font-size:11px}.app-shell .table-scroll th{height:45px;font-size:10px}
+
+  .app-shell .rank-list>div{grid-template-columns:25px minmax(0,1fr) auto;gap:10px}.app-shell .mini-model>span{min-width:0}.app-shell .mini-model b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.app-shell .rank-list strong{font-size:10px;white-space:nowrap}
+  .app-shell .chart-lg{height:230px}.app-shell .chart-sm{height:205px}.app-shell .recharts-cartesian-axis-tick text{font-size:9px}.app-shell .chart-tip{max-width:min(220px,75vw)}
+
+  .app-shell .catalog-hero{padding:24px 20px}.app-shell .catalog-hero h2{font-size:22px}.app-shell .catalog-hero p{font-size:11px;line-height:1.9}
+  .app-shell .provider-tabs button{height:44px}.app-shell .model-card,.app-shell .provider-card{padding:15px}
+  .app-shell .model-card h3,.app-shell .provider-card h3{font-size:14px}.app-shell .model-card code,.app-shell .provider-card code{font-size:10px}
+  .app-shell .model-card>header>.badge,.app-shell .provider-card>header>.badge{flex:none;max-width:42%;overflow:hidden;text-overflow:ellipsis}
+  .app-shell .model-card>footer,.app-shell .provider-card>footer{gap:9px}.app-shell .model-card>footer a{min-width:0;font-size:10px}
+
+  .app-shell .filter-row{gap:8px}.app-shell .filter-row .search-box{min-width:100%}.app-shell .filter-row>select{flex:1 1 150px;width:100%;min-width:0}
+  .app-shell .filter-row:has(.date-filter){display:grid;grid-template-columns:minmax(0,1fr) auto minmax(0,1fr);align-items:center}
+  .app-shell .filter-row:has(.date-filter) .search-box{grid-column:1/-1}
+  .app-shell .filter-row:has(.date-filter) .date-filter{width:100%;min-width:0;padding-inline:7px}
+  .app-shell .filter-row:has(.date-filter) .primary-btn{grid-column:1/-1;width:100%}
+  .app-shell .pagination{gap:12px;flex-wrap:wrap;font-size:10px}.app-shell .pagination button,.app-shell .pagination b{height:44px;min-width:44px;display:grid;place-items:center}
+
+  .app-shell .settings-nav{position:static;display:flex;flex-direction:row;grid-template-columns:none;gap:6px;overflow-x:auto;overscroll-behavior-inline:contain;scroll-snap-type:x proximity;padding:6px;scrollbar-width:none}
+  .app-shell .settings-nav::-webkit-scrollbar{display:none}.app-shell .settings-nav button{height:48px;flex:0 0 auto;min-width:max-content;padding-inline:12px;gap:7px;font-size:11px;scroll-snap-align:start}
+  .app-shell .calc-preview{align-items:flex-start;flex-wrap:wrap;gap:7px;line-height:1.7}.app-shell .calc-preview b{font-size:14px;overflow-wrap:anywhere}
+
+  .app-shell .playground-pro,.app-shell .media-playground{gap:14px}.app-shell .endpoint-strip{grid-template-columns:1fr;gap:7px}.app-shell .endpoint-strip>code{width:100%;padding-block:5px;font-size:10px}
+  .app-shell .json-field{min-height:clamp(250px,44dvh,340px)}.app-shell .json-field textarea{min-height:220px;padding:14px;line-height:1.65}
+  .app-shell .json-output{min-height:clamp(280px,48dvh,370px)}.app-shell .json-output>div{max-height:min(360px,48dvh)}
+  .app-shell .output-panel>header{height:auto;min-height:52px;flex-wrap:wrap;gap:8px;padding-block:6px}.app-shell .output-meta{margin-right:auto;flex-wrap:wrap;justify-content:flex-end}
+  .app-shell .code-recipes>header{align-items:flex-start;flex-wrap:wrap;padding:11px 12px}.app-shell .code-recipes>header>div{min-width:0;flex:1}.app-shell .code-recipes>header .ghost-btn{flex:none}
+  .app-shell .code-recipes>nav{padding:7px 9px;scroll-snap-type:x proximity}.app-shell .code-recipes>nav button{height:44px;flex:none;font-size:11px;scroll-snap-align:start}
+  .app-shell .code-recipes>pre{max-height:min(310px,48dvh);padding:14px;font-size:10px}.app-shell .code-recipes>footer{align-items:flex-start;flex-wrap:wrap;font-size:9px;line-height:1.8}
+  .app-shell .media-output{min-height:clamp(310px,54dvh,430px)}.app-shell .media-output-body,.app-shell .media-output .output-empty{min-height:230px}.app-shell .advanced-json .json-field{min-height:250px}.app-shell .advanced-json .json-field textarea{min-height:210px}
+  .app-shell .audio-actions>*{width:100%;justify-content:center}.app-shell .audio-input-card audio,.app-shell .generated-audio audio{height:44px}
+
+  .app-shell .credential-head{align-items:flex-start;flex-wrap:wrap;gap:12px}.app-shell .credential-head>.primary-btn{margin-right:auto}.app-shell .provider-identity{max-width:100%}.app-shell .provider-identity>div{min-width:0}.app-shell .provider-identity code{max-width:100%}
+  .app-shell .credential-main code,.app-shell .credential-manage-identity code,.app-shell .key-limit-key code{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .app-shell .credential-manage-identity{align-items:flex-start;flex-wrap:wrap}.app-shell .credential-manage-identity>.badge{margin-right:auto;flex:none}
+  .app-shell .credential-actions{justify-content:stretch}.app-shell .credential-actions>*{flex:1}.app-shell .credential-actions .ghost-btn{white-space:normal}
+  .app-shell .credential-danger-zone>button{min-height:48px}.app-shell .pricing-editor>header{align-items:flex-start;flex-wrap:wrap;gap:9px}.app-shell .pricing-editor>header>div{min-width:0}
+  .app-shell .pricing-row input,.app-shell .pricing-row select,.app-shell .pricing-row .icon-btn{height:44px}.app-shell .pricing-row .icon-btn{width:44px}
+  .app-shell .key-limit-identity{flex-wrap:wrap}.app-shell .key-limit-key{max-width:100%}.app-shell .key-limit-editors>section>header{flex-wrap:wrap}.app-shell .unlimited-control{padding-inline:4px}
+  .app-shell .segmented button{min-height:44px;height:auto;padding:8px 6px;line-height:1.6}.app-shell .model-selector{max-height:min(300px,42dvh)}
+
+  .app-shell .ticket-kpis{grid-template-columns:repeat(3,minmax(0,1fr));gap:7px}.app-shell .ticket-kpis>div{min-height:72px;padding:10px;gap:8px}.app-shell .ticket-kpis>div>svg{width:35px;height:35px}.app-shell .ticket-kpis b{font-size:15px}.app-shell .ticket-kpis small{font-size:9px}
+  .app-shell .tickets-page.conversation-open>.page-head,.app-shell .tickets-page.conversation-open>.ticket-kpis,.app-shell .tickets-page.conversation-open>.ticket-toolbar{display:none}
+  .app-shell .ticket-toolbar select{height:48px;font-size:16px}.app-shell .ticket-workspace{display:block;height:auto;min-height:0}.app-shell .ticket-list{height:min(52dvh,430px);border-left:0;border-bottom:1px solid var(--border)}
+  .app-shell .ticket-workspace:not(.conversation-open) .ticket-conversation{display:none}.app-shell .ticket-workspace.conversation-open .ticket-list{display:none}.app-shell .ticket-workspace.conversation-open .ticket-conversation{display:flex;height:min(72dvh,690px);min-height:500px}
+  .ticket-mobile-back{display:inline-flex;align-items:center;justify-content:center;gap:7px;min-width:44px;min-height:44px;border:1px solid var(--border);border-radius:10px;background:var(--surface2);color:var(--muted);font-size:11px}
+  .ticket-mobile-back svg{width:16px}.app-shell .ticket-conversation-head{min-height:0;flex-wrap:wrap;padding:12px}.app-shell .ticket-conversation-head>div{min-width:0;flex:1}.app-shell .ticket-conversation-head>div>div{flex-wrap:wrap}.app-shell .ticket-conversation-head h2{overflow-wrap:anywhere}
+  .app-shell .ticket-admin-controls{padding:10px 12px;gap:8px}.app-shell .ticket-admin-controls>div:not(.ticket-customer){min-width:0;flex:1 1 125px}.app-shell .ticket-admin-controls select{height:44px;font-size:16px}
+  .app-shell .ticket-messages{padding:13px 10px}.app-shell .ticket-messages article{max-width:100%}.app-shell .ticket-messages article>div:last-child{min-width:0}.app-shell .ticket-messages article p{font-size:12px}.app-shell .ticket-composer{padding:10px max(10px,env(safe-area-inset-left)) max(10px,env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-right))}.app-shell .ticket-composer textarea{font-size:16px}.app-shell .ticket-composer .primary-btn{min-height:44px}
+}
+
+@media(max-width:430px){
+  .app-shell .content{padding-top:16px}.mobile-page-title{font-size:11px}
+  .app-shell .top-actions{gap:4px}.app-shell .top-actions .notification{display:none}
+  .app-shell .page-head h1{font-size:21px}.app-shell .head-actions>*{flex:1 1 130px;white-space:normal}
+  .app-shell .modal-actions{flex-direction:column}.app-shell .modal-actions>*{width:100%;flex:0 0 auto;min-height:48px}
+  .app-shell .modal-body{padding-inline:12px}
+  .app-shell .segmented{grid-auto-flow:row;grid-template-columns:1fr;grid-auto-columns:auto}.app-shell .segmented button{width:100%}
+  .app-shell .model-card>header,.app-shell .provider-card>header{gap:8px}.app-shell .model-card>header>.badge,.app-shell .provider-card>header>.badge{max-width:38%;padding-inline:6px}
+  .app-shell .model-card>footer{align-items:stretch;flex-wrap:wrap}.app-shell .model-card>footer .primary-btn{width:100%}.app-shell .model-card>footer a{flex:1;justify-content:center}
+  .app-shell .credential-head{flex-direction:column}.app-shell .credential-head>.primary-btn{width:100%;margin:0}.app-shell .provider-identity{width:100%}
+  .app-shell .credential-manage-identity>.badge{margin:0}.app-shell .credential-delete-warning,.app-shell .credential-delete-final,.app-shell .rotate-key-confirm{padding:13px;gap:10px}.app-shell .credential-delete-warning>svg,.app-shell .credential-delete-final>svg{width:34px;height:34px;padding:8px}
+  .app-shell .pricing-row{grid-template-columns:1fr}.app-shell .pricing-row .icon-btn{grid-column:auto;justify-self:end}
+  .app-shell .key-limit-identity{flex-direction:column}.app-shell .key-limit-identity>.badge{align-self:flex-start}.app-shell .key-limit-editors>section{padding:12px}.app-shell .key-limit-editors>section>header{flex-direction:column}.app-shell .unlimited-control{align-self:stretch;justify-content:space-between}
+  .app-shell .ticket-kpis{grid-template-columns:repeat(3,minmax(0,1fr))}.app-shell .ticket-kpis>div{min-height:82px;padding:8px 4px;flex-direction:column;justify-content:center;text-align:center;gap:4px}.app-shell .ticket-kpis>div>svg{width:32px;height:32px}.app-shell .ticket-kpis small{font-size:8px;line-height:1.5;margin:0}.app-shell .ticket-toolbar select{flex:1 1 100%}.app-shell .ticket-workspace.conversation-open .ticket-conversation{height:calc(100dvh - 108px);min-height:500px}
+  .app-shell .ticket-composer>div{gap:8px}.app-shell .ticket-composer small{display:none}.app-shell .ticket-composer .primary-btn{margin-right:auto}
+  .app-shell .invoice>div{align-items:flex-start;gap:8px}.app-shell .invoice>div>*{min-width:0}.app-shell .invoice b,.app-shell .invoice strong{overflow-wrap:anywhere;text-align:left}
+}
+
+@media(max-width:760px) and (orientation:landscape) and (max-height:500px){
+  .app-shell .topbar{height:calc(56px + env(safe-area-inset-top))}.app-shell .content{padding-top:14px}
+  .app-shell .sidebar{padding-top:max(16px,calc(env(safe-area-inset-top) + 10px));padding-bottom:max(12px,calc(env(safe-area-inset-bottom) + 8px))}.app-shell .sidebar nav{margin-top:20px}.app-shell .side-status,.app-shell .side-version{display:none}
+  .app-shell .modal{max-height:calc(100dvh - env(safe-area-inset-top));border-radius:16px 16px 0 0}.app-shell .modal>header{min-height:58px;padding-block:8px}.app-shell .modal-body{padding-top:10px}
+  .app-shell .ticket-workspace.conversation-open .ticket-conversation{height:calc(100dvh - 82px);min-height:340px}.app-shell .ticket-list{height:min(68dvh,320px)}
+  .app-shell .json-field{min-height:230px}.app-shell .json-field textarea{min-height:190px}.app-shell .json-output,.app-shell .media-output{min-height:260px}
+}
