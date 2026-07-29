@@ -7,6 +7,7 @@ public sealed record VerifyOtpRequest(string Mobile, string Code);
 public sealed record UpdateProfileRequest(string DisplayName);
 public sealed record CreateUserKeyRequest(string Name, int? RequestLimit, decimal? SpendLimitUsd, string AccessMode, string[] ModelRules);
 public sealed record UpdateUserKeyRequest(string Name, bool IsActive, int? RequestLimit, decimal? SpendLimitUsd, string AccessMode, string[] ModelRules);
+public sealed record UpdateUserKeyLimitsRequest(int? RequestLimit, decimal? SpendLimitUsd);
 public sealed record CreateTopUpRequest(decimal AmountUsd);
 public sealed record UpdateSettingsRequest(long DollarRateIrr, decimal FeePercent, string SmsApiKey, int SmsTemplateId, string ZarinpalMerchantId, string PaymentCallbackUrl);
 public sealed record ProviderRequest(string Name, string Slug, string LogoUrl, string BaseUrl, string PricingUrl, string Protocol, bool IsActive);

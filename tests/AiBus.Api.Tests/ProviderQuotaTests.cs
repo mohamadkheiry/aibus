@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Data.Common;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text;
@@ -7,6 +8,7 @@ using AiBus.Api;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Logging;
@@ -16,12 +18,18 @@ namespace AiBus.Api.Tests;
 
 public sealed class ScriptedProviderHandler : HttpMessageHandler
 {
-    private Func<HttpRequestMessage, HttpResponseMessage> _responder = _ =>
-        JsonResponse(HttpStatusCode.ServiceUnavailable, new { error = new { message = "No test response configured" } });
+    private Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _responder = (_, _) =>
+        Task.FromResult(JsonResponse(HttpStatusCode.ServiceUnavailable, new { error = new { message = "No test response configured" } }));
 
     public ConcurrentQueue<string> CalledApiKeys { get; } = new();
 
     public void Reset(Func<HttpRequestMessage, HttpResponseMessage> responder)
+    {
+        while (CalledApiKeys.TryDequeue(out _)) { }
+        _responder = (request, _) => Task.FromResult(responder(request));
+    }
+
+    public void ResetAsync(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder)
     {
         while (CalledApiKeys.TryDequeue(out _)) { }
         _responder = responder;
@@ -30,7 +38,7 @@ public sealed class ScriptedProviderHandler : HttpMessageHandler
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         CalledApiKeys.Enqueue(request.Headers.Authorization?.Parameter ?? "");
-        return Task.FromResult(_responder(request));
+        return _responder(request, cancellationToken);
     }
 
     public static HttpResponseMessage JsonResponse(HttpStatusCode status, object body) => new(status)
@@ -43,6 +51,7 @@ public sealed class QuotaGatewayFactory : WebApplicationFactory<Program>
 {
     private readonly string _dbPath = Path.Combine(Path.GetTempPath(), $"aibus-quota-tests-{Guid.NewGuid():N}.db");
     public ScriptedProviderHandler ProviderHandler { get; } = new();
+    public SpendReservationRaceInterceptor SpendRaceInterceptor { get; } = new();
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -52,7 +61,10 @@ public sealed class QuotaGatewayFactory : WebApplicationFactory<Program>
         {
             services.RemoveAll<DbContextOptions<AppDbContext>>();
             services.RemoveAll<AppDbContext>();
-            services.AddDbContext<AppDbContext>(options => options.UseSqlite($"Data Source={_dbPath}"));
+            services.AddSingleton(SpendRaceInterceptor);
+            services.AddDbContext<AppDbContext>((serviceProvider, options) => options
+                .UseSqlite($"Data Source={_dbPath}")
+                .AddInterceptors(serviceProvider.GetRequiredService<SpendReservationRaceInterceptor>()));
             services.AddSingleton(ProviderHandler);
             services.AddHttpClient("providers").ConfigurePrimaryHttpMessageHandler(serviceProvider =>
                 serviceProvider.GetRequiredService<ScriptedProviderHandler>());
@@ -64,6 +76,48 @@ public sealed class QuotaGatewayFactory : WebApplicationFactory<Program>
         base.Dispose(disposing);
         foreach (var suffix in new[] { "", "-wal", "-shm" })
             try { File.Delete(_dbPath + suffix); } catch (IOException) { }
+    }
+}
+
+public sealed class SpendReservationRaceInterceptor : DbCommandInterceptor
+{
+    private int _armed;
+    private TaskCompletionSource<bool> _paused = CompletedSignal();
+    private TaskCompletionSource<bool> _release = CompletedSignal();
+
+    public void Arm()
+    {
+        _paused = NewSignal();
+        _release = NewSignal();
+        Volatile.Write(ref _armed, 1);
+    }
+
+    public Task WaitUntilPaused(TimeSpan timeout) => _paused.Task.WaitAsync(timeout);
+    public void Release() => _release.TrySetResult(true);
+
+    public override async ValueTask<InterceptionResult<DbDataReader>> ReaderExecutingAsync(
+        DbCommand command,
+        CommandEventData eventData,
+        InterceptionResult<DbDataReader> result,
+        CancellationToken cancellationToken = default)
+    {
+        if (command.CommandText.Contains("ProviderCredentials", StringComparison.Ordinal)
+            && Interlocked.CompareExchange(ref _armed, 0, 1) == 1)
+        {
+            _paused.TrySetResult(true);
+            await _release.Task.WaitAsync(cancellationToken);
+        }
+        return result;
+    }
+
+    private static TaskCompletionSource<bool> NewSignal() =>
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private static TaskCompletionSource<bool> CompletedSignal()
+    {
+        var signal = NewSignal();
+        signal.SetResult(true);
+        return signal;
     }
 }
 
@@ -137,7 +191,7 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
         var usage = await db.UsageRecords.AsNoTracking().SingleAsync(x => x.UserApiKeyId == setup.UserApiKeyId);
 
         Assert.Equal(setup.StartingWalletUsd, user.WalletUsd);
-        Assert.Equal(0, userKey.RequestCount);
+        Assert.Equal(1, userKey.RequestCount);
         Assert.Equal(0, userKey.SpentUsd);
         Assert.Equal(0, providerKey.RemainingBalanceUsd);
         Assert.Equal(ProviderErrorMapper.QuotaExhaustedCode, providerKey.LastErrorCode);
@@ -176,7 +230,7 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
         var usage = await db.UsageRecords.AsNoTracking().SingleAsync(x => x.UserApiKeyId == setup.UserApiKeyId);
 
         Assert.Equal(setup.StartingWalletUsd, user.WalletUsd);
-        Assert.Equal(0, userKey.RequestCount);
+        Assert.Equal(1, userKey.RequestCount);
         Assert.Equal(0, userKey.SpentUsd);
         Assert.Equal("failed", usage.Status);
         Assert.Equal(0, usage.CostUsd);
@@ -230,6 +284,183 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
         var usage = Assert.Single(usages);
         Assert.Equal("success", usage.Status);
         Assert.True(usage.CostUsd > 0);
+    }
+
+    [Fact]
+    public async Task Request_limit_reservation_admits_exactly_one_concurrent_upstream_request()
+    {
+        var upstreamEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseUpstream = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        factory.ProviderHandler.ResetAsync(async (_, cancellationToken) =>
+        {
+            upstreamEntered.TrySetResult(true);
+            await releaseUpstream.Task.WaitAsync(cancellationToken);
+            return ScriptedProviderHandler.JsonResponse(HttpStatusCode.OK, new
+            {
+                id = "chatcmpl-concurrency",
+                choices = new[] { new { index = 0, message = new { role = "assistant", content = "OK" }, finish_reason = "stop" } },
+                usage = new { prompt_tokens = 1000, completion_tokens = 500, total_tokens = 1500 }
+            });
+        });
+        var setup = await CreateGatewayIdentity(("upstream-blocking", DateTime.UtcNow.AddDays(-1)));
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await db.UserApiKeys.Where(x => x.Id == setup.UserApiKeyId)
+                .ExecuteUpdateAsync(update => update.SetProperty(x => x.RequestLimit, 1));
+        }
+
+        using var firstRequest = GatewayRequest(setup.RawUserApiKey, setup.ModelId);
+        var firstTask = _client.SendAsync(firstRequest);
+        await upstreamEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        HttpResponseMessage secondResponse;
+        try
+        {
+            using var secondRequest = GatewayRequest(setup.RawUserApiKey, setup.ModelId);
+            secondResponse = await _client.SendAsync(secondRequest).WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(HttpStatusCode.TooManyRequests, secondResponse.StatusCode);
+            Assert.Contains("request_limit", await secondResponse.Content.ReadAsStringAsync());
+            Assert.Equal(new[] { "upstream-blocking" }, factory.ProviderHandler.CalledApiKeys.ToArray());
+        }
+        finally
+        {
+            releaseUpstream.TrySetResult(true);
+        }
+        using (secondResponse)
+        using (var firstResponse = await firstTask.WaitAsync(TimeSpan.FromSeconds(10)))
+        {
+            Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+            Assert.Contains("chatcmpl-concurrency", await firstResponse.Content.ReadAsStringAsync());
+        }
+
+        using var verificationScope = factory.Services.CreateScope();
+        var verificationDb = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var userKey = await verificationDb.UserApiKeys.AsNoTracking().SingleAsync(x => x.Id == setup.UserApiKeyId);
+        Assert.Equal(1, userKey.RequestCount);
+        Assert.True(userKey.SpentUsd > 0);
+        Assert.NotNull(userKey.LastUsedAtUtc);
+        Assert.Equal(1, await verificationDb.UsageRecords.CountAsync(x => x.UserApiKeyId == setup.UserApiKeyId));
+    }
+
+    [Fact]
+    public async Task Atomic_reservation_rejects_stale_auth_when_concurrent_completion_reaches_spend_limit()
+    {
+        factory.ProviderHandler.Reset(_ => ScriptedProviderHandler.JsonResponse(HttpStatusCode.OK, new
+        {
+            id = "must-not-reach-upstream",
+            choices = Array.Empty<object>(),
+            usage = new { prompt_tokens = 0, completion_tokens = 0, total_tokens = 0 }
+        }));
+        var setup = await CreateGatewayIdentity(("upstream-spend-race", DateTime.UtcNow.AddDays(-1)));
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await db.UserApiKeys.Where(x => x.Id == setup.UserApiKeyId)
+                .ExecuteUpdateAsync(update => update
+                    .SetProperty(x => x.SpendLimitUsd, 1m)
+                    .SetProperty(x => x.SpentUsd, 0m));
+        }
+
+        factory.SpendRaceInterceptor.Arm();
+        using var request = GatewayRequest(setup.RawUserApiKey, setup.ModelId);
+        var responseTask = _client.SendAsync(request);
+        try
+        {
+            await factory.SpendRaceInterceptor.WaitUntilPaused(TimeSpan.FromSeconds(10));
+            using var completionScope = factory.Services.CreateScope();
+            var completionDb = completionScope.ServiceProvider.GetRequiredService<AppDbContext>();
+            await completionDb.UserApiKeys.Where(x => x.Id == setup.UserApiKeyId)
+                .ExecuteUpdateAsync(update => update.SetProperty(x => x.SpentUsd, 1m));
+        }
+        finally
+        {
+            factory.SpendRaceInterceptor.Release();
+        }
+
+        using var response = await responseTask.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        Assert.Contains("spend_limit", await response.Content.ReadAsStringAsync());
+        Assert.Empty(factory.ProviderHandler.CalledApiKeys);
+
+        using var verificationScope = factory.Services.CreateScope();
+        var verificationDb = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var userKey = await verificationDb.UserApiKeys.AsNoTracking().SingleAsync(x => x.Id == setup.UserApiKeyId);
+        Assert.Equal(0, userKey.RequestCount);
+        Assert.Equal(1m, userKey.SpentUsd);
+        Assert.False(await verificationDb.UsageRecords.AnyAsync(x => x.UserApiKeyId == setup.UserApiKeyId));
+    }
+
+    [Fact]
+    public async Task Concurrent_successes_atomically_update_all_billing_and_provider_totals()
+    {
+        var bothUpstreamRequestsEntered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseUpstream = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var upstreamCount = 0;
+        factory.ProviderHandler.ResetAsync(async (_, cancellationToken) =>
+        {
+            if (Interlocked.Increment(ref upstreamCount) == 2) bothUpstreamRequestsEntered.TrySetResult(true);
+            await releaseUpstream.Task.WaitAsync(cancellationToken);
+            return ScriptedProviderHandler.JsonResponse(HttpStatusCode.OK, new
+            {
+                id = "chatcmpl-concurrent-success",
+                choices = new[] { new { index = 0, message = new { role = "assistant", content = "OK" }, finish_reason = "stop" } },
+                usage = new { prompt_tokens = 1000, completion_tokens = 500, total_tokens = 1500 }
+            });
+        });
+        var setup = await CreateGatewayIdentity(("upstream-concurrent-success", DateTime.UtcNow.AddDays(-1)));
+        decimal expectedCost;
+        const decimal startingProviderBalance = 20m;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var model = await db.Models.AsNoTracking().SingleAsync(x => x.ModelId == setup.ModelId);
+            expectedCost = 1000m / 1_000_000m * model.InputPricePerMillionUsd
+                + 500m / 1_000_000m * model.OutputPricePerMillionUsd;
+            await db.ProviderCredentials.Where(x => x.Id == setup.CredentialIds[0])
+                .ExecuteUpdateAsync(update => update
+                    .SetProperty(x => x.LastError, "stale provider error")
+                    .SetProperty(x => x.LastErrorCode, ProviderErrorMapper.QuotaExhaustedCode)
+                    .SetProperty(x => x.LastErrorAtUtc, DateTime.UtcNow));
+        }
+
+        using var firstRequest = GatewayRequest(setup.RawUserApiKey, setup.ModelId);
+        using var secondRequest = GatewayRequest(setup.RawUserApiKey, setup.ModelId);
+        var firstTask = _client.SendAsync(firstRequest);
+        var secondTask = _client.SendAsync(secondRequest);
+        try
+        {
+            await bothUpstreamRequestsEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            releaseUpstream.TrySetResult(true);
+        }
+        using var firstResponse = await firstTask.WaitAsync(TimeSpan.FromSeconds(10));
+        using var secondResponse = await secondTask.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        Assert.Equal(2, factory.ProviderHandler.CalledApiKeys.Count);
+
+        using var verificationScope = factory.Services.CreateScope();
+        var verificationDb = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var user = await verificationDb.Users.AsNoTracking().SingleAsync(x => x.Id == setup.UserId);
+        var userKey = await verificationDb.UserApiKeys.AsNoTracking().SingleAsync(x => x.Id == setup.UserApiKeyId);
+        var providerKey = await verificationDb.ProviderCredentials.AsNoTracking().SingleAsync(x => x.Id == setup.CredentialIds[0]);
+        var usages = await verificationDb.UsageRecords.AsNoTracking().Where(x => x.UserApiKeyId == setup.UserApiKeyId).ToListAsync();
+        var expectedTotal = expectedCost * 2;
+        Assert.Equal(2, userKey.RequestCount);
+        Assert.Equal(expectedTotal, userKey.SpentUsd);
+        Assert.Equal(setup.StartingWalletUsd - expectedTotal, user.WalletUsd);
+        Assert.Equal(2, providerKey.RequestCount);
+        Assert.Equal(startingProviderBalance - expectedTotal, providerKey.RemainingBalanceUsd);
+        Assert.NotNull(providerKey.LastUsedAtUtc);
+        Assert.Null(providerKey.LastError);
+        Assert.Null(providerKey.LastErrorCode);
+        Assert.Null(providerKey.LastErrorAtUtc);
+        Assert.Equal(2, usages.Count);
+        Assert.All(usages, usage => Assert.Equal(expectedCost, usage.CostUsd));
+        Assert.Equal(expectedTotal, usages.Sum(x => x.CostUsd));
     }
 
     private async Task<GatewaySetup> CreateGatewayIdentity(params (string ApiKey, DateTime LastUsedAtUtc)[] providerKeys)

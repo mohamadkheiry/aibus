@@ -23,6 +23,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         if (!await CheckAccess(context, user, userKey, model, ct)) return;
         var credentials = await ActiveCredentials(model.ProviderId, ct);
         if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
+        if (!await ReserveRequestSlot(context, userKey, ct)) return;
 
         // OpenAI transcription sockets use intent=transcription without a URL model. The
         // selected transcription model is configured inside session.update and billed here.
@@ -145,6 +146,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
 
             var credentials = await ActiveCredentials(model.ProviderId, ct);
             if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
+            if (!await ReserveRequestSlot(context, userKey, ct)) return;
             var started = Stopwatch.StartNew();
             var failures = new List<ProviderFailure>();
             ProviderCredential? lastAttempt = null;
@@ -221,6 +223,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
 
         await using var source = file.OpenReadStream();
         using var audio = new MemoryStream(); await source.CopyToAsync(audio, ct); var audioBytes = audio.ToArray();
+        if (!await ReserveRequestSlot(context, userKey, ct)) return;
         var durationSeconds = decimal.TryParse(form["aibus_duration_seconds"].ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var duration) ? Math.Max(0, duration) : 0;
         var started = Stopwatch.StartNew();
         var failures = new List<ProviderFailure>();
@@ -287,13 +290,11 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             var model = await db.Models.Include(x => x.Provider).SingleOrDefaultAsync(x => x.ModelId == modelName && x.IsActive && x.Provider!.IsActive, ct);
             if (model?.Provider is null) { await WriteError(context, 404, "model_not_found", "مدل فعال پیدا نشد."); return; }
 
-            if (!HasModelAccess(userKey, modelName)) { await WriteError(context, 403, "model_denied", "این کلید به مدل انتخابی دسترسی ندارد."); return; }
-            if (user.WalletUsd <= 0) { await WriteError(context, 402, "insufficient_balance", "موجودی کیف پول کافی نیست."); return; }
-            if (userKey.RequestLimit.HasValue && userKey.RequestCount >= userKey.RequestLimit.Value) { await WriteError(context, 429, "request_limit", "سقف تعداد درخواست این کلید تمام شده است."); return; }
-            if (userKey.SpendLimitUsd.HasValue && userKey.SpentUsd >= userKey.SpendLimitUsd.Value) { await WriteError(context, 429, "spend_limit", "سقف هزینه این کلید تمام شده است."); return; }
+            if (!await CheckAccess(context, user, userKey, model, ct)) return;
 
             var credentials = await ActiveCredentials(model.ProviderId, ct);
             if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
+            if (!await ReserveRequestSlot(context, userKey, ct)) return;
 
             var stream = body.RootElement.TryGetProperty("stream", out var streamProperty) && streamProperty.ValueKind == JsonValueKind.True;
             var stopwatch = Stopwatch.StartNew();
@@ -426,6 +427,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
 
             var credentials = await ActiveCredentials(model.ProviderId, ct);
             if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
+            if (!await ReserveRequestSlot(context, userKey, ct)) return;
             var stream = body.RootElement.TryGetProperty("stream", out var streamProperty) && streamProperty.ValueKind == JsonValueKind.True;
             var started = Stopwatch.StartNew();
             var failures = new List<ProviderFailure>();
@@ -517,9 +519,36 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
     {
         if (!HasModelAccess(key, model.ModelId)) { await WriteError(context, 403, "model_denied", "این کلید به مدل انتخابی دسترسی ندارد."); return false; }
         if (user.WalletUsd <= 0) { await WriteError(context, 402, "insufficient_balance", "موجودی کیف پول کافی نیست."); return false; }
+        // This early check avoids provider discovery for an already exhausted key. The
+        // conditional reservation below remains the concurrency-safe source of truth.
         if (key.RequestLimit.HasValue && key.RequestCount >= key.RequestLimit.Value) { await WriteError(context, 429, "request_limit", "سقف تعداد درخواست این کلید تمام شده است."); return false; }
         if (key.SpendLimitUsd.HasValue && key.SpentUsd >= key.SpendLimitUsd.Value) { await WriteError(context, 429, "spend_limit", "سقف هزینه این کلید تمام شده است."); return false; }
         return true;
+    }
+
+    private async Task<bool> ReserveRequestSlot(HttpContext context, UserApiKey key, CancellationToken ct)
+    {
+        var admittedAtUtc = DateTime.UtcNow;
+        var affected = await db.UserApiKeys
+            .Where(x => x.Id == key.Id && x.IsActive
+                && (!x.RequestLimit.HasValue || x.RequestCount < x.RequestLimit.Value)
+                && (!x.SpendLimitUsd.HasValue || x.SpentUsd < x.SpendLimitUsd.Value))
+            .ExecuteUpdateAsync(update => update
+                .SetProperty(x => x.RequestCount, x => x.RequestCount + 1)
+                .SetProperty(x => x.LastUsedAtUtc, admittedAtUtc), ct);
+        if (affected == 1) return true;
+
+        var state = await db.UserApiKeys.AsNoTracking().Where(x => x.Id == key.Id)
+            .Select(x => new { x.IsActive, x.RequestLimit, x.RequestCount, x.SpendLimitUsd, x.SpentUsd }).SingleOrDefaultAsync(ct);
+        if (state is null || !state.IsActive)
+            await WriteError(context, 401, "invalid_api_key", "کلید API نامعتبر یا غیرفعال است.");
+        else if (state.RequestLimit.HasValue && state.RequestCount >= state.RequestLimit.Value)
+            await WriteError(context, 429, "request_limit", "سقف تعداد درخواست این کلید تمام شده است.");
+        else if (state.SpendLimitUsd.HasValue && state.SpentUsd >= state.SpendLimitUsd.Value)
+            await WriteError(context, 429, "spend_limit", "سقف هزینه این کلید تمام شده است.");
+        else
+            await WriteError(context, 409, "request_not_admitted", "درخواست به‌دلیل تغییر هم‌زمان وضعیت کلید پذیرفته نشد؛ دوباره تلاش کنید.");
+        return false;
     }
 
     private Task<List<ProviderCredential>> ActiveCredentials(Guid providerId, CancellationToken ct) =>
@@ -690,18 +719,32 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
 
     private async Task Record(AppUser user, UserApiKey key, AiModel model, ProviderCredential credential, long input, long output, decimal cost, long durationMs, string status, string traceId, CancellationToken ct)
     {
+        var usage = new UsageRecord { UserId = user.Id, UserApiKeyId = key.Id, ModelId = model.Id, ProviderCredentialId = credential.Id, ModelName = model.ModelId, ProviderName = model.Provider!.Name, InputTokens = input, OutputTokens = output, CostUsd = cost, DurationMs = (int)Math.Min(int.MaxValue, durationMs), Status = status, TraceId = traceId };
         if (status == "success")
         {
-            user.WalletUsd = Math.Max(0, user.WalletUsd - cost);
-            key.RequestCount++;
-            key.SpentUsd += cost;
-            key.LastUsedAtUtc = DateTime.UtcNow;
-            credential.RequestCount++;
-            credential.LastUsedAtUtc = DateTime.UtcNow;
-            ProviderErrorMapper.Clear(credential);
-            if (credential.InitialBalanceUsd > 0) credential.RemainingBalanceUsd = Math.Max(0, credential.RemainingBalanceUsd - cost);
+            var completedAtUtc = DateTime.UtcNow;
+            await using var transaction = await db.Database.BeginTransactionAsync(ct);
+            await db.UserApiKeys.Where(x => x.Id == key.Id)
+                .ExecuteUpdateAsync(update => update.SetProperty(x => x.SpentUsd, x => x.SpentUsd + cost), ct);
+            await db.Users.Where(x => x.Id == user.Id)
+                .ExecuteUpdateAsync(update => update.SetProperty(x => x.WalletUsd,
+                    x => x.WalletUsd >= cost ? x.WalletUsd - cost : 0m), ct);
+            await db.ProviderCredentials.Where(x => x.Id == credential.Id)
+                .ExecuteUpdateAsync(update => update
+                    .SetProperty(x => x.RequestCount, x => x.RequestCount + 1)
+                    .SetProperty(x => x.LastUsedAtUtc, completedAtUtc)
+                    .SetProperty(x => x.RemainingBalanceUsd, x => x.InitialBalanceUsd <= 0
+                        ? x.RemainingBalanceUsd
+                        : x.RemainingBalanceUsd >= cost ? x.RemainingBalanceUsd - cost : 0m)
+                    .SetProperty(x => x.LastError, (string?)null)
+                    .SetProperty(x => x.LastErrorCode, (string?)null)
+                    .SetProperty(x => x.LastErrorAtUtc, (DateTime?)null), ct);
+            db.UsageRecords.Add(usage);
+            await db.SaveChangesAsync(ct);
+            await transaction.CommitAsync(ct);
+            return;
         }
-        db.UsageRecords.Add(new UsageRecord { UserId = user.Id, UserApiKeyId = key.Id, ModelId = model.Id, ProviderCredentialId = credential.Id, ModelName = model.ModelId, ProviderName = model.Provider!.Name, InputTokens = input, OutputTokens = output, CostUsd = cost, DurationMs = (int)Math.Min(int.MaxValue, durationMs), Status = status, TraceId = traceId });
+        db.UsageRecords.Add(usage);
         await db.SaveChangesAsync(ct);
     }
 

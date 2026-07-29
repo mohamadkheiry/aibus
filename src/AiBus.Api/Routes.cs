@@ -83,6 +83,7 @@ public static class Routes
         api.MapPost("/keys", async (CreateUserKeyRequest req, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, SecretProtector secrets, HttpContext context, CancellationToken ct) =>
         {
             if (await db.UserApiKeys.CountAsync(x => x.UserId == p.UserId(), ct) >= 20) return Results.BadRequest(new { message = "حداکثر ۲۰ کلید مجاز است." });
+            if (!ValidUserKeyLimits(req.RequestLimit, req.SpendLimitUsd)) return InvalidUserKeyLimits();
             var raw = Hashing.RandomApiKey();
             var key = new UserApiKey { UserId = p.UserId(), Name = req.Name, KeyHash = Hashing.Sha256(raw), KeyPrefix = raw[..12], ProtectedApiKey = secrets.Protect(raw), RequestLimit = req.RequestLimit, SpendLimitUsd = req.SpendLimitUsd, AccessMode = ValidAccessMode(req.AccessMode), ModelRulesJson = JsonSerializer.Serialize(req.ModelRules ?? []) };
             db.UserApiKeys.Add(key); await db.SaveChangesAsync(ct);
@@ -125,7 +126,21 @@ public static class Routes
         api.MapPut("/keys/{id:guid}", async (Guid id, UpdateUserKeyRequest req, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
         {
             var key = await db.UserApiKeys.SingleOrDefaultAsync(x => x.Id == id && x.UserId == p.UserId(), ct); if (key is null) return Results.NotFound();
-            key.Name = req.Name; key.IsActive = req.IsActive; key.RequestLimit = req.RequestLimit; key.SpendLimitUsd = req.SpendLimitUsd; key.AccessMode = ValidAccessMode(req.AccessMode); key.ModelRulesJson = JsonSerializer.Serialize(req.ModelRules ?? []); await db.SaveChangesAsync(ct); return Results.NoContent();
+            if (!ValidUserKeyLimits(req.RequestLimit, req.SpendLimitUsd)) return InvalidUserKeyLimits();
+            var previousLimits = new { key.RequestLimit, key.SpendLimitUsd };
+            key.Name = req.Name; key.IsActive = req.IsActive; key.RequestLimit = req.RequestLimit; key.SpendLimitUsd = req.SpendLimitUsd; key.AccessMode = ValidAccessMode(req.AccessMode); key.ModelRulesJson = JsonSerializer.Serialize(req.ModelRules ?? []);
+            AddUserKeyLimitsAudit(db, p.UserId(), key.Id, previousLimits.RequestLimit, previousLimits.SpendLimitUsd, req.RequestLimit, req.SpendLimitUsd, "full_update");
+            await db.SaveChangesAsync(ct); return Results.NoContent();
+        });
+        api.MapPut("/keys/{id:guid}/limits", async (Guid id, UpdateUserKeyLimitsRequest req, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
+        {
+            var key = await db.UserApiKeys.SingleOrDefaultAsync(x => x.Id == id && x.UserId == p.UserId(), ct); if (key is null) return Results.NotFound();
+            if (!ValidUserKeyLimits(req.RequestLimit, req.SpendLimitUsd)) return InvalidUserKeyLimits();
+            var previous = new { key.RequestLimit, key.SpendLimitUsd };
+            key.RequestLimit = req.RequestLimit;
+            key.SpendLimitUsd = req.SpendLimitUsd;
+            AddUserKeyLimitsAudit(db, p.UserId(), key.Id, previous.RequestLimit, previous.SpendLimitUsd, req.RequestLimit, req.SpendLimitUsd, "limits_endpoint");
+            await db.SaveChangesAsync(ct); return Results.NoContent();
         });
         api.MapDelete("/keys/{id:guid}", async (Guid id, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
         {
@@ -365,6 +380,30 @@ public static class Routes
     private static readonly HashSet<string> TicketPriorities = ["low", "normal", "high", "urgent"];
     private static readonly HashSet<string> ValidTicketStatuses = ["open", "waiting_support", "waiting_user", "resolved", "closed"];
     private const decimal MaxCredentialBalanceUsd = 1_000_000_000m;
+    private const int MaxUserKeyRequestLimit = 1_000_000_000;
+    private const decimal MaxUserKeySpendLimitUsd = 1_000_000_000m;
+    private static void AddUserKeyLimitsAudit(AppDbContext db, Guid actorUserId, Guid keyId, int? previousRequestLimit, decimal? previousSpendLimitUsd, int? requestLimit, decimal? spendLimitUsd, string source) =>
+        db.AuditLogs.Add(new AuditLog
+        {
+            ActorUserId = actorUserId,
+            Action = "user_api_key.limits.update",
+            EntityType = "user_api_key",
+            EntityId = keyId.ToString(),
+            DetailsJson = JsonSerializer.Serialize(new
+            {
+                previous = new { RequestLimit = previousRequestLimit, SpendLimitUsd = previousSpendLimitUsd },
+                current = new { RequestLimit = requestLimit, SpendLimitUsd = spendLimitUsd },
+                source
+            })
+        });
+    private static bool ValidUserKeyLimits(int? requestLimit, decimal? spendLimitUsd) =>
+        (!requestLimit.HasValue || requestLimit.Value is >= 0 and <= MaxUserKeyRequestLimit)
+        && (!spendLimitUsd.HasValue || spendLimitUsd.Value is >= 0 and <= MaxUserKeySpendLimitUsd);
+    private static IResult InvalidUserKeyLimits() => Results.BadRequest(new
+    {
+        code = "invalid_api_key_limits",
+        message = "سقف درخواست و سقف مصرف دلاری باید نامحدود یا عددی نامنفی و حداکثر یک میلیارد باشند."
+    });
     private static bool ValidCredentialBalances(decimal initial, decimal remaining, decimal threshold) =>
         initial is >= 0 and <= MaxCredentialBalanceUsd
         && remaining >= 0 && remaining <= initial
