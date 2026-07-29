@@ -125,35 +125,81 @@ function Splash(){return <div className="splash"><Logo/><div className="loader"/
 function Logo(){return <div className="brand"><div className="brand-mark"><Sparkles/></div><div><b>Ai<span>Bus</span></b><small>AI Gateway</small></div></div>}
 
 function Landing({onLogin}:{onLogin:()=>void}){
-  const providers=['OpenAI','Gemini','Claude','DeepSeek','Kimi','GLM','xAI','Mistral','Qwen','Cohere','ElevenLabs','Deepgram','AssemblyAI','Google Cloud Speech','AWS Speech','Speechmatics','Gladia']
-  const features=[
-    {icon:Network,title:'یک API برای تمام مدل‌ها',text:'بدون تغییر معماری، بین ده‌ها مدل از معتبرترین شرکت‌های جهان جابه‌جا شوید.'},
-    {icon:Gauge,title:'کنترل کامل هزینه',text:'قیمت‌گذاری دقیق توکن ورودی و خروجی، کیف پول دلاری و گزارش‌های لحظه‌ای.'},
-    {icon:KeyRound,title:'کلیدهای دسترسی هوشمند',text:'برای هر پروژه آستانه توقف هزینه، سقف تعداد درخواست و مدل‌های مجاز یا غیرمجاز تعریف کنید.'},
-    {icon:Activity,title:'Streaming و Realtime',text:'پشتیبانی یکپارچه از پاسخ معمولی، SSE Stream و ارتباط WebSocket.'},
-    {icon:ShieldCheck,title:'امنیت در سطح سازمانی',text:'رمزنگاری اسرار، کلیدهای هش‌شده و کنترل دسترسی مستقل برای هر سرویس.'},
-    {icon:BarChart3,title:'تحلیل عمیق مصرف',text:'نمودار توکن، هزینه، مدل و عملکرد در بازه‌های شمسی و میلادی.'}
-  ]
-  return <div className="landing-page">
-    <div className="landing-glow glow-one"/><div className="landing-glow glow-two"/>
-    <nav className="landing-nav">
-      <Logo/>
-      <div className="landing-links"><a href="#capabilities">قابلیت‌ها</a><a href="#providers">مدل‌ها</a><a href="#workflow">چطور کار می‌کند؟</a><a href="#security">امنیت</a></div>
-      <div className="landing-actions"><button className="landing-login" onClick={onLogin}>ورود به پنل</button><button className="landing-start" onClick={onLogin}>شروع رایگان <ArrowLeft/></button></div>
-    </nav>
-    <main>
-      <section className="landing-hero">
-        <div className="landing-hero-copy"><span className="landing-kicker"><i/><Sparkles/>زیرساخت هوش مصنوعی برای کسب‌وکارهای آینده</span><h1>تمام مدل‌های هوش مصنوعی،<br/><em>پشت یک API.</em></h1><p>با AiBus به قدرتمندترین مدل‌های جهان متصل شوید، هزینه‌ها را دقیق کنترل کنید و همه‌چیز را از یک داشبورد فارسی حرفه‌ای مدیریت کنید.</p><div className="hero-actions"><button className="landing-start hero-main" onClick={onLogin}>ساخت حساب و شروع <ArrowLeft/></button><a className="hero-secondary" href="#workflow"><Code2/>مشاهده نحوه اتصال</a></div><div className="hero-trust"><span><Check/>بدون هزینه راه‌اندازی</span><span><Check/>پرداخت ریالی</span><span><Check/>مقیاس‌پذیر و امن</span></div></div>
-        <div className="gateway-showcase"><div className="showcase-halo"/><div className="code-window"><header><div className="window-dots"><i/><i/><i/></div><span>AI Gateway Request</span><Badge tone="mint">LIVE</Badge></header><div className="code-body" dir="ltr"><div><b>POST</b> /v1/chat/completions</div><pre>{'{\n  "model": "gpt-5.6-luna",\n  "messages": [{\n    "role": "user",\n    "content": "سلام AiBus"\n  }],\n  "stream": true\n}'}</pre></div><footer><span><i/>200 OK</span><span>842ms</span><span>1,284 tokens</span><strong>$0.0042</strong></footer></div><div className="float-chip chip-a"><Bot/><span><b>۳۲۰+ سرویس</b><small>متن، صوت و زنده</small></span></div><div className="float-chip chip-b"><ShieldCheck/><span><b>اتصال امن</b><small>Encrypted</small></span></div><div className="float-chip chip-c"><Zap/><span><b>Realtime</b><small>SSE + WebSocket</small></span></div></div>
+  const providers=[['OA','OpenAI'],['G','Gemini'],['AI','Anthropic'],['DS','DeepSeek'],['X','xAI'],['Q','Qwen'],['M','Mistral'],['K','Kimi'],['GL','GLM'],['11','ElevenLabs'],['DG','Deepgram'],['C','Cohere']]
+  const currentYear=new Date().getFullYear()
+  const copyQuickStart=async()=>{try{await navigator.clipboard.writeText(`curl https://aibus.00f.ir/v1/chat/completions \\\n  -H "Authorization: Bearer aibus_..." \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"your-model-id","messages":[{"role":"user","content":"سلام"}]}'`);toast.success('نمونه کد کپی شد')}catch{toast.error('کپی خودکار ممکن نبود')}}
+  return <div className="lp-page">
+    <a className="lp-skip" href="#landing-main">پرش به محتوای اصلی</a>
+    <div className="lp-ambient lp-ambient-a" aria-hidden="true"/><div className="lp-ambient lp-ambient-b" aria-hidden="true"/>
+    <header className="lp-header">
+      <nav className="lp-nav" aria-label="ناوبری اصلی">
+        <a href="#landing-main" className="lp-logo-link" aria-label="AiBus، صفحه اصلی"><Logo/></a>
+        <div className="lp-nav-links"><a href="#capabilities">قابلیت‌ها</a><a href="#providers">مدل‌ها</a><a href="#workflow">نحوه اتصال</a><a href="#security">امنیت</a></div>
+        <div className="lp-nav-actions"><button type="button" className="lp-login" onClick={onLogin}>ورود</button><button type="button" className="lp-primary lp-nav-cta" onClick={onLogin}>ساخت کلید API <ArrowLeft aria-hidden="true"/></button></div>
+      </nav>
+    </header>
+
+    <main id="landing-main">
+      <section className="lp-hero" aria-labelledby="lp-hero-title">
+        <div className="lp-hero-copy">
+          <div className="lp-kicker"><span><i/>زیرساخت یکپارچه هوش مصنوعی</span><b>AI Gateway</b></div>
+          <h1 id="lp-hero-title">یک API برای متن، صدا<br/>و <em>ارتباط زنده.</em></h1>
+          <p>حساب را ریالی شارژ کنید، مصرف دلاری را شفاف ببینید و دسترسی مدل، سقف درخواست و آستانه هزینه هر کلید را مستقل مدیریت کنید.</p>
+          <div className="lp-hero-actions"><button type="button" className="lp-primary lp-hero-cta" onClick={onLogin}>ورود و شروع استفاده <ArrowLeft aria-hidden="true"/></button><a className="lp-secondary" href="#workflow"><Code2 aria-hidden="true"/>مشاهده نمونه اتصال</a></div>
+          <div className="lp-proof"><span><Check aria-hidden="true"/>یک API مشترک</span><span><Check aria-hidden="true"/>HTTP، SSE و WebSocket</span><span><Check aria-hidden="true"/>کنترل مدل، درخواست و هزینه</span><span><Check aria-hidden="true"/>تقویم شمسی و میلادی</span></div>
+        </div>
+
+        <div className="lp-product-stage" role="img" aria-label="پیش‌نمایش داشبورد مدیریت مصرف، دسترسی مدل‌ها و مسیر درخواست AiBus">
+          <div className="lp-stage-grid" aria-hidden="true"/>
+          <div className="lp-console">
+            <header><div className="lp-window-dots" aria-hidden="true"><i/><i/><i/></div><span>AiBus / Overview</span><div className="lp-live"><i/>نمونه داشبورد</div></header>
+            <div className="lp-console-body">
+              <aside aria-hidden="true"><div className="active"><LayoutDashboard/></div><div><Activity/></div><div><KeyRound/></div><div><BarChart3/></div><div><Settings/></div></aside>
+              <div className="lp-console-main">
+                <div className="lp-console-title"><span><small>پیش‌نمایش داشبورد</small><b>مرکز فرمان مصرف و دسترسی</b></span><div><Bell/><i/></div></div>
+                <div className="lp-console-kpis"><div><span><Network/>درخواست‌ها</span><b>پایش لحظه‌ای</b><small>بر اساس زمان و کلید</small></div><div><span><CircleDollarSign/>مصرف دلاری</span><b>کنترل‌شده</b><small>با آستانه توقف</small></div><div><span><Zap/>دسترسی مدل</span><b>قابل انتخاب</b><small>برای هر کلید مستقل</small></div></div>
+                <div className="lp-console-panels"><div className="lp-usage-chart"><header><span><b>روند مصرف</b><small>فیلتر زمانی</small></span><div><i/>توکن</div></header><svg viewBox="0 0 430 130" preserveAspectRatio="none" aria-hidden="true"><defs><linearGradient id="lpArea" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stopColor="#66e3c4" stopOpacity=".3"/><stop offset="1" stopColor="#66e3c4" stopOpacity="0"/></linearGradient></defs><path className="area" d="M0 108 C48 102 63 72 105 80 S165 103 211 60 S275 82 320 42 S382 61 430 20 L430 130 L0 130Z"/><path className="line" d="M0 108 C48 102 63 72 105 80 S165 103 211 60 S275 82 320 42 S382 61 430 20"/></svg><div className="lp-chart-days"><span>ش</span><span>ی</span><span>د</span><span>س</span><span>چ</span><span>پ</span><span>ج</span></div></div><div className="lp-model-list"><header><b>مسیرهای آماده</b><MoreHorizontal/></header><div><i>OA</i><span><b>OpenAI</b><small>متن و صوت</small></span><em>فعال</em></div><div><i>AI</i><span><b>Anthropic</b><small>متن و استدلال</small></span><em>فعال</em></div><div><i>G</i><span><b>Google</b><small>چندرسانه‌ای</small></span><em>فعال</em></div></div></div>
+              </div>
+            </div>
+          </div>
+          <div className="lp-route-card"><header><span><Radio/>مسیر درخواست</span><b dir="ltr">OpenAI compatible</b></header><div dir="ltr"><span className="lp-route-node">Your app</span><i/><span className="lp-route-bus"><Sparkles/>AiBus</span><i/><span className="lp-route-node">AI model</span></div><footer><span dir="ltr">HTTP</span><span dir="ltr">SSE Stream</span><strong dir="ltr">WebSocket</strong></footer></div>
+          <div className="lp-secure-chip"><ShieldCheck/><span><b>کلید محافظت‌شده</b><small>دسترسی کنترل‌شده</small></span></div>
+        </div>
       </section>
-      <section className="landing-stats"><div><strong>۱۷+</strong><span>ارائه‌دهنده جهانی</span></div><div><strong>۳۲۰+</strong><span>مدل و سرویس آماده</span></div><div><strong>۹۹.۹٪</strong><span>دسترسی پایدار</span></div><div><strong>&lt; ۱ ثانیه</strong><span>زمان مسیریابی</span></div></section>
-      <section className="provider-belt" id="providers"><p>یک اتصال ساده به بهترین مدل‌های جهان</p><div>{providers.map((p,i)=><span key={p}><i>{p.slice(0,2)}</i>{p}{i<providers.length-1&&<b>◆</b>}</span>)}</div></section>
-      <section className="landing-section" id="capabilities"><div className="section-intro"><span>قدرت در سادگی</span><h2>همه‌چیزی که برای ساخت<br/>محصول هوشمند نیاز دارید</h2><p>زیرساخت پیچیده‌ی مدل‌ها را به ما بسپارید و روی تجربه‌ای که برای کاربران خود می‌سازید تمرکز کنید.</p></div><div className="feature-grid">{features.map(({icon:Icon,title,text},i)=><article key={title} className={`feature-tile feature-${i+1}`}><div><Icon/></div><span>۰{i+1}</span><h3>{title}</h3><p>{text}</p><a href="#workflow">بیشتر بدانید <ArrowLeft/></a></article>)}</div></section>
-      <section className="workflow-section" id="workflow"><div className="workflow-copy"><span className="landing-kicker"><i/>راه‌اندازی در چند دقیقه</span><h2>از ثبت‌نام تا اولین پاسخ،<br/><em>فقط سه قدم.</em></h2><div className="workflow-steps"><div><b>۱</b><span><strong>حساب خود را شارژ کنید</strong><small>پرداخت ریالی امن با درگاه زرین‌پال</small></span></div><div><b>۲</b><span><strong>یک کلید API بسازید</strong><small>محدودیت هزینه، درخواست و مدل را تنظیم کنید</small></span></div><div><b>۳</b><span><strong>اولین درخواست را بفرستید</strong><small>با استاندارد سازگار با OpenAI، بدون بازنویسی کد</small></span></div></div><button className="landing-start" onClick={onLogin}>ورود و ساخت کلید <ArrowLeft/></button></div><div className="terminal-card"><header><span><i/><i/><i/></span><code>quick-start.sh</code><Badge tone="mint">آماده</Badge></header><pre dir="ltr"><span>curl</span>{' https://api.aibus.ir/v1/chat/completions \\\n  -H '}<b>"Authorization: Bearer aibus_..."</b>{' \\\n  -H '}<b>"Content-Type: application/json"</b>{' \\\n  -d '}<em>'{`{"model":"claude-sonnet-5","messages":[...]}`}'</em></pre><div className="terminal-result"><Check/><span><b>پاسخ با موفقیت دریافت شد</b><small>Provider: Anthropic · Latency: 926ms</small></span><strong>$0.0068</strong></div></div></section>
-      <section className="security-section" id="security"><div className="security-orb"><ShieldCheck/><i/><i/><i/></div><div><span>امنیت بدون مصالحه</span><h2>کلیدها و اعتبار شما،<br/>همیشه محافظت می‌شوند.</h2><p>از رمزنگاری Data Protection تا هش یک‌طرفه‌ی کلیدهای کاربران و تفکیک کامل دسترسی‌ها، امنیت در تمام لایه‌های AiBus طراحی شده است.</p><div><span><Check/>رمزنگاری اسرار</span><span><Check/>کنترل دسترسی مدل</span><span><Check/>محدودیت هزینه</span><span><Check/>گزارش کامل رخدادها</span></div></div></section>
-      <section className="landing-cta"><div className="cta-stars"><Sparkles/><Sparkles/><Sparkles/></div><span>آماده‌اید هوشمندتر بسازید؟</span><h2>همین امروز به دنیای مدل‌های<br/>هوش مصنوعی متصل شوید.</h2><p>یک حساب، یک کیف پول و یک API برای تمام مدل‌هایی که نیاز دارید.</p><button onClick={onLogin}>ورود به AiBus و شروع <ArrowLeft/></button></section>
+
+      <section className="lp-trust" id="providers" aria-labelledby="lp-providers-title">
+        <div className="lp-trust-head"><p id="lp-providers-title">یک API برای اکوسیستم مدل‌های پیشرو</p><span><Globe2/>متن، تصویر، صوت و Realtime</span></div>
+        <div className="lp-provider-row">{providers.map(([mark,name])=><div key={name}><i>{mark}</i><span>{name}</span></div>)}</div>
+      </section>
+
+      <section className="lp-section" id="capabilities" aria-labelledby="lp-capabilities-title">
+        <div className="lp-section-head"><span>ساخته‌شده برای کنترل</span><h2 id="lp-capabilities-title">هر چیزی که بین ایده و<br/>یک محصول هوشمند لازم است.</h2><p>یک لایه واحد برای اتصال، نظارت و تصمیم‌گیری؛ بدون پراکندگی کلیدها، صورتحساب‌ها و مستندات.</p></div>
+        <div className="lp-bento">
+          <article className="lp-feature lp-feature-route"><div className="lp-feature-copy"><i><Network/></i><span>درگاه یکپارچه</span><h3>مدل را عوض کنید، نه معماری را.</h3><p>با ورودی استاندارد OpenAI-compatible بین ارائه‌دهنده‌ها و مدل‌های مختلف جابه‌جا شوید.</p></div><div className="lp-model-router" aria-hidden="true"><div><span>POST</span><code>/v1/chat/completions</code></div><div className="lp-router-flow"><b><Sparkles/>AiBus</b><i/><span>OpenAI</span><i/><span>Gemini</span><i/><span>Claude</span></div></div></article>
+          <article className="lp-feature lp-feature-budget"><div className="lp-feature-copy"><i><Gauge/></i><span>کنترل هزینه</span><h3>بودجه، دقیق و قابل پیش‌بینی.</h3><p>هزینه توکن ورودی و خروجی را لحظه‌ای ببینید و برای هر کلید آستانه توقف تعیین کنید.</p></div><div className="lp-budget-visual" aria-hidden="true"><div><span><b dir="ltr">USD</b><small>سقف دلاری پروژه</small></span></div><footer><span>آستانه توقف</span><b>قابل تنظیم</b></footer></div></article>
+          <article className="lp-feature lp-feature-access"><div className="lp-feature-copy"><i><KeyRound/></i><span>دسترسی هوشمند</span><h3>هر کلید، دقیقاً به‌اندازه نیاز.</h3><p>سقف درخواست، مدل‌های مجاز و وضعیت فعال‌بودن هر پروژه را مستقل مدیریت کنید.</p></div><div className="lp-access-list" aria-hidden="true"><div><i>OA</i><span><b>OpenAI</b><small>دسترسی کامل</small></span><em className="on"/></div><div><i>G</i><span><b>Gemini</b><small>فقط مدل‌های منتخب</small></span><em className="on"/></div><div><i>X</i><span><b>xAI</b><small>بدون دسترسی</small></span><em/></div></div></article>
+          <article className="lp-feature lp-feature-realtime"><div className="lp-feature-copy"><i><AudioLines/></i><span>صوت و Realtime</span><h3>از متن تا مکالمه زنده.</h3><p>Streaming، WebSocket، تبدیل متن‌به‌صوت و صوت‌به‌متن را در یک مسیر اجرا کنید.</p></div><div className="lp-wave" aria-hidden="true"><span/><span/><span/><span/><span/><span/><span/><span/><span/><b><Mic2/></b></div></article>
+          <article className="lp-feature lp-feature-insight"><div className="lp-feature-copy"><i><BarChart3/></i><span>گزارش‌های کاربردی</span><h3>مصرف را ببینید؛ قبل از اینکه غافلگیر شوید.</h3><p>توکن، هزینه، مدل و زمان پاسخ را با فیلترهای شمسی و میلادی تحلیل کنید.</p></div><div className="lp-insight-chart" aria-hidden="true"><span style={{height:'31%'}}/><span style={{height:'48%'}}/><span style={{height:'43%'}}/><span style={{height:'72%'}}/><span style={{height:'59%'}}/><span style={{height:'88%'}}/><span style={{height:'78%'}}/></div></article>
+        </div>
+      </section>
+
+      <section className="lp-workflow" id="workflow" aria-labelledby="lp-workflow-title">
+        <div className="lp-workflow-copy"><span>از ثبت‌نام تا اولین پاسخ</span><h2 id="lp-workflow-title">سه قدم کوتاه تا<br/>اولین درخواست واقعی.</h2><p>کلاینت‌های سازگار با OpenAI API معمولاً با تغییر Base URL و کلید متصل می‌شوند؛ بدون تغییر معماری اصلی فراخوانی‌ها.</p><ol><li><b>01</b><span><strong>حساب را ریالی شارژ کنید</strong><small>پرداخت امن از درگاه زرین‌پال</small></span></li><li><b>02</b><span><strong>کلید مخصوص پروژه بسازید</strong><small>سقف هزینه، درخواست و مدل را مشخص کنید</small></span></li><li><b>03</b><span><strong>Base URL را جایگزین کنید</strong><small>همان ساختار آشنای OpenAI API</small></span></li></ol></div>
+        <div className="lp-code-card"><header><div className="lp-window-dots"><i/><i/><i/></div><div className="lp-code-tabs"><span className="active">cURL</span><span>OpenAI-compatible</span></div><button type="button" aria-label="کپی نمونه کد" onClick={copyQuickStart}><Copy/></button></header><pre dir="ltr"><code><span>curl</span> https://aibus.00f.ir/v1/chat/completions {'\\'}{`\n`}  -H <b>"Authorization: Bearer aibus_••••"</b> {'\\'}{`\n`}  -H <b>"Content-Type: application/json"</b> {'\\'}{`\n`}  -d <em>{`'{
+    "model": "your-model-id",
+    "messages": [{"role":"user","content":"سلام"}]
+  }'`}</em></code></pre><footer><div><Check/><span><b>ساختار سازگار با OpenAI API</b><small dir="ltr">HTTP · SSE · WebSocket</small></span></div><strong>آماده اتصال</strong></footer></div>
+      </section>
+
+      <section className="lp-security" id="security" aria-labelledby="lp-security-title">
+        <div className="lp-security-visual" aria-hidden="true"><div className="lp-security-rings"><span/><span/><span/><ShieldCheck/></div><div className="lp-security-status"><i/><span><b>Policy checks enabled</b><small dir="ltr">Model · Request · Spend</small></span></div></div>
+        <div className="lp-security-copy"><span>امنیت در تمام مسیر</span><h2 id="lp-security-title">کنترل کامل،<br/>همراه با حفاظت از اسرار.</h2><p>کلیدهای ارائه‌دهنده و نسخهٔ قابل‌بازیابی کلیدهای کاربران به‌شکل رمزنگاری‌شده نگهداری می‌شوند؛ برای اعتبارسنجی هر کلید نیز هش مستقل ثبت می‌شود. هر درخواست پیش از ارسال از سیاست دسترسی و موجودی عبور می‌کند.</p><div><span><LockKeyhole/><b>رمزنگاری کلیدهای مبدا</b></span><span><EyeOff/><b>هش مستقل برای اعتبارسنجی</b></span><span><Database/><b>ثبت دقیق رخداد و مصرف</b></span><span><ShieldCheck/><b>محدودیت مدل و بودجه</b></span></div></div>
+      </section>
+
+      <section className="lp-final" aria-labelledby="lp-final-title"><div className="lp-final-orb" aria-hidden="true"><Sparkles/></div><span>زیرساخت آماده است</span><h2 id="lp-final-title">محصول بعدی‌تان را با<br/><em>هوش بیشتری</em> بسازید.</h2><p>یک حساب، یک کیف پول و یک API برای مدل‌های فعال موردنیاز شما.</p><div><button type="button" className="lp-primary" onClick={onLogin}>ورود به AiBus <ArrowLeft/></button><a href="#capabilities">مرور دوباره قابلیت‌ها</a></div></section>
     </main>
-    <footer className="landing-footer"><Logo/><p>زیرساخت یکپارچه و فارسی API هوش مصنوعی</p><div><a href="#capabilities">قابلیت‌ها</a><a href="#security">امنیت</a><button onClick={onLogin}>ورود به پنل</button></div><small>© ۱۴۰۵ AiBus. تمام حقوق محفوظ است.</small></footer>
+
+    <footer className="lp-footer"><div><Logo/><p>زیرساخت یکپارچه و فارسی API هوش مصنوعی</p></div><nav aria-label="پیوندهای پایین صفحه"><a href="#providers">مدل‌ها</a><a href="#capabilities">قابلیت‌ها</a><a href="#security">امنیت</a><button type="button" onClick={onLogin}>ورود به پنل</button></nav><small dir="ltr">© {currentYear} AiBus</small></footer>
   </div>
 }
 
