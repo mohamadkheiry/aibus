@@ -127,6 +127,7 @@ function Logo(){return <div className="brand"><div className="brand-mark"><Spark
 function Landing({onLogin}:{onLogin:()=>void}){
   const providers=[['OA','OpenAI'],['G','Gemini'],['AI','Anthropic'],['DS','DeepSeek'],['X','xAI'],['Q','Qwen'],['M','Mistral'],['K','Kimi'],['GL','GLM'],['11','ElevenLabs'],['DG','Deepgram'],['C','Cohere']]
   const currentYear=new Date().getFullYear()
+  const [mobileMenuOpen,setMobileMenuOpen]=useState(false)
   const copyQuickStart=async()=>{try{await navigator.clipboard.writeText(`curl https://aibus.00f.ir/v1/chat/completions \\\n  -H "Authorization: Bearer aibus_..." \\\n  -H "Content-Type: application/json" \\\n  -d '{"model":"your-model-id","messages":[{"role":"user","content":"سلام"}]}'`);toast.success('نمونه کد کپی شد')}catch{toast.error('کپی خودکار ممکن نبود')}}
   return <div className="lp-page">
     <a className="lp-skip" href="#landing-main">پرش به محتوای اصلی</a>
@@ -135,7 +136,8 @@ function Landing({onLogin}:{onLogin:()=>void}){
       <nav className="lp-nav" aria-label="ناوبری اصلی">
         <a href="#landing-main" className="lp-logo-link" aria-label="AiBus، صفحه اصلی"><Logo/></a>
         <div className="lp-nav-links"><a href="#capabilities">قابلیت‌ها</a><a href="#providers">مدل‌ها</a><a href="#workflow">نحوه اتصال</a><a href="#security">امنیت</a></div>
-        <div className="lp-nav-actions"><button type="button" className="lp-login" onClick={onLogin}>ورود</button><button type="button" className="lp-primary lp-nav-cta" onClick={onLogin}>ساخت کلید API <ArrowLeft aria-hidden="true"/></button></div>
+        <div className="lp-nav-actions"><button type="button" className="lp-login" onClick={onLogin}>ورود</button><button type="button" className="lp-primary lp-nav-cta" onClick={onLogin}>ساخت کلید API <ArrowLeft aria-hidden="true"/></button><button type="button" className="lp-menu-toggle" aria-label={mobileMenuOpen?'بستن منوی صفحه':'بازکردن منوی صفحه'} aria-expanded={mobileMenuOpen} aria-controls="lp-mobile-menu" onClick={()=>setMobileMenuOpen(open=>!open)}>{mobileMenuOpen?<X/>:<Menu/>}</button></div>
+        {mobileMenuOpen&&<div className="lp-mobile-nav" id="lp-mobile-menu"><a href="#capabilities" onClick={()=>setMobileMenuOpen(false)}>قابلیت‌ها</a><a href="#providers" onClick={()=>setMobileMenuOpen(false)}>مدل‌ها</a><a href="#workflow" onClick={()=>setMobileMenuOpen(false)}>نحوه اتصال</a><a href="#security" onClick={()=>setMobileMenuOpen(false)}>امنیت</a><button type="button" onClick={()=>{setMobileMenuOpen(false);onLogin()}}>ورود به پنل <ArrowLeft/></button></div>}
       </nav>
     </header>
 
@@ -149,8 +151,9 @@ function Landing({onLogin}:{onLogin:()=>void}){
           <div className="lp-proof"><span><Check aria-hidden="true"/>یک API مشترک</span><span><Check aria-hidden="true"/>HTTP، SSE و WebSocket</span><span><Check aria-hidden="true"/>کنترل مدل، درخواست و هزینه</span><span><Check aria-hidden="true"/>تقویم شمسی و میلادی</span></div>
         </div>
 
-        <div className="lp-product-stage" role="img" aria-label="پیش‌نمایش داشبورد مدیریت مصرف، دسترسی مدل‌ها و مسیر درخواست AiBus">
+        <div className="lp-product-stage" aria-hidden="true">
           <div className="lp-stage-grid" aria-hidden="true"/>
+          <div className="lp-mobile-console" aria-hidden="true"><header><span><Sparkles/>AiBus</span><em><i/>نمونه داشبورد</em></header><div className="lp-mobile-kpis"><div><small>درخواست‌ها</small><b>پایش لحظه‌ای</b></div><div><small>هزینه</small><b>سقف مستقل</b></div><div><small>مدل‌ها</small><b>دسترسی دقیق</b></div></div><div className="lp-mobile-chart"><span><b>روند مصرف</b><small>فیلتر زمانی و مدل</small></span><svg viewBox="0 0 300 74" preserveAspectRatio="none"><path className="area" d="M0 66 C35 62 53 40 86 47 S135 61 169 31 S218 45 250 21 S279 31 300 10 L300 74 L0 74Z"/><path className="line" d="M0 66 C35 62 53 40 86 47 S135 61 169 31 S218 45 250 21 S279 31 300 10"/></svg></div><div className="lp-mobile-route" dir="ltr"><span>Your app</span><i/><b><Sparkles/>AiBus</b><i/><span>AI model</span></div><footer><span>HTTP</span><span>SSE Stream</span><strong>WebSocket</strong></footer></div>
           <div className="lp-console">
             <header><div className="lp-window-dots" aria-hidden="true"><i/><i/><i/></div><span>AiBus / Overview</span><div className="lp-live"><i/>نمونه داشبورد</div></header>
             <div className="lp-console-body">
@@ -169,7 +172,7 @@ function Landing({onLogin}:{onLogin:()=>void}){
 
       <section className="lp-trust" id="providers" aria-labelledby="lp-providers-title">
         <div className="lp-trust-head"><p id="lp-providers-title">یک API برای اکوسیستم مدل‌های پیشرو</p><span><Globe2/>متن، تصویر، صوت و Realtime</span></div>
-        <div className="lp-provider-row">{providers.map(([mark,name])=><div key={name}><i>{mark}</i><span>{name}</span></div>)}</div>
+        <DragScroll className="lp-provider-row">{providers.map(([mark,name])=><div key={name}><i>{mark}</i><span>{name}</span></div>)}</DragScroll>
       </section>
 
       <section className="lp-section" id="capabilities" aria-labelledby="lp-capabilities-title">
