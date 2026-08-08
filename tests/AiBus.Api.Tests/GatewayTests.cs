@@ -344,6 +344,18 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
             });
         }
 
+        using (var modelsRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models"))
+        {
+            modelsRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", rawApiKey);
+            var modelsResponse = await _client.SendAsync(modelsRequest);
+            modelsResponse.EnsureSuccessStatusCode();
+            using var modelsDocument = JsonDocument.Parse(await modelsResponse.Content.ReadAsStringAsync());
+            var modelItem = Assert.Single(modelsDocument.RootElement.GetProperty("data").EnumerateArray(), item => item.GetProperty("id").GetString() == modelId);
+            Assert.False(string.IsNullOrWhiteSpace(modelItem.GetProperty("display_name").GetString()));
+            Assert.StartsWith("/v1/", modelItem.GetProperty("endpoint_path").GetString());
+            Assert.False(string.IsNullOrWhiteSpace(modelItem.GetProperty("service_type").GetString()));
+        }
+
         using var gatewayRequest = new HttpRequestMessage(HttpMethod.Post, "/v1/chat/completions");
         gatewayRequest.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", rawApiKey);
         gatewayRequest.Content = JsonContent.Create(new { model = modelId, messages = new[] { new { role = "user", content = "test" } } });

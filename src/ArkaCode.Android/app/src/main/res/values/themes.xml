@@ -1,0 +1,10 @@
+<resources>
+  <style name="Theme.ArkaCode" parent="android:style/Theme.Material.NoActionBar">
+    <item name="android:fontFamily">sans</item><item name="android:windowLightStatusBar">false</item><item name="android:statusBarColor">@color/arka_bg</item>
+    <item name="android:navigationBarColor">@color/arka_bg</item><item name="android:colorAccent">@color/arka_mint</item><item name="android:windowBackground">@color/arka_bg</item>
+  </style>
+  <style name="EffortButton" parent="android:style/Widget.Material.CompoundButton.RadioButton">
+    <item name="android:layout_width">0dp</item><item name="android:layout_height">match_parent</item><item name="android:layout_weight">1</item><item name="android:button">@null</item>
+    <item name="android:gravity">center</item><item name="android:textColor">@color/arka_text</item><item name="android:textSize">11sp</item><item name="android:background">@drawable/effort_selector</item><item name="android:layout_margin">2dp</item>
+  </style>
+</resources>

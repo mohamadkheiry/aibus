@@ -3,8 +3,8 @@ import toast from 'react-hot-toast'
 import {
   Activity, AlertTriangle, ArrowLeft, AudioLines, BarChart3, Bell, Bot, Check, ChevronDown, CircleDollarSign,
   Clock3, Code2, Copy, CreditCard, Database, Eye, EyeOff, Gauge, Globe2, KeyRound, LayoutDashboard,
-  Headphones, Languages, LifeBuoy, LockKeyhole, LogOut, Menu, MessageSquareText, Mic2, Moon, MoreHorizontal, Network, Plus, Radio, RefreshCw,
-  Search, Settings, ShieldCheck, Sparkles, Sun, TestTube2, Trash2, TrendingUp, UserCog, Users, Wallet, X, Zap
+  Download, FolderOpen, Headphones, Languages, LifeBuoy, LockKeyhole, LogOut, Menu, MessageSquareText, Mic2, Monitor, Moon, MoreHorizontal, Network, Plus, Radio, RefreshCw,
+  Search, Settings, ShieldCheck, Smartphone, Sparkles, Sun, TestTube2, Trash2, TrendingUp, UserCog, Users, Wallet, X, Zap
 } from 'lucide-react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell, Line, Pie, PieChart,
@@ -180,9 +180,9 @@ function Landing({onLogin,onArkaChat}:{onLogin:()=>void;onArkaChat:()=>void}){
     <header className="lp-header">
       <nav ref={landingNavRef} className="lp-nav" aria-label="ناوبری اصلی">
         <a href="#landing-main" className="lp-logo-link" aria-label="AiBus، صفحه اصلی"><Logo/></a>
-        <div className="lp-nav-links"><a href="#capabilities">قابلیت‌ها</a><a href="#providers">مدل‌ها</a><a href="#workflow">نحوه اتصال</a><a href="#security">امنیت</a></div>
+        <div className="lp-nav-links"><a href="#arkacode">ArkaCode</a><a href="#capabilities">قابلیت‌ها</a><a href="#providers">مدل‌ها</a><a href="#workflow">نحوه اتصال</a><a href="#security">امنیت</a></div>
         <div className="lp-nav-actions"><button type="button" className="lp-arkachat-nav" onClick={onArkaChat}><MessageSquareText/>ArkaChat</button><button type="button" className="lp-login" onClick={onLogin}>ورود</button><button type="button" className="lp-primary lp-nav-cta" onClick={onLogin}>ساخت کلید API <ArrowLeft aria-hidden="true"/></button><button ref={mobileMenuToggleRef} type="button" className="lp-menu-toggle" aria-label={mobileMenuOpen?'بستن منوی صفحه':'بازکردن منوی صفحه'} aria-expanded={mobileMenuOpen} aria-controls="lp-mobile-menu" onClick={()=>setMobileMenuOpen(open=>!open)}>{mobileMenuOpen?<X/>:<Menu/>}</button></div>
-        {mobileMenuOpen&&<div className="lp-mobile-nav" id="lp-mobile-menu"><a href="#capabilities" onClick={()=>setMobileMenuOpen(false)}>قابلیت‌ها</a><a href="#providers" onClick={()=>setMobileMenuOpen(false)}>مدل‌ها</a><a href="#workflow" onClick={()=>setMobileMenuOpen(false)}>نحوه اتصال</a><a href="#security" onClick={()=>setMobileMenuOpen(false)}>امنیت</a><button type="button" className="lp-mobile-arkachat" onClick={()=>{setMobileMenuOpen(false);onArkaChat()}}><MessageSquareText/>ورود به ArkaChat</button><button type="button" onClick={()=>{setMobileMenuOpen(false);onLogin()}}>ورود به پنل <ArrowLeft/></button></div>}
+        {mobileMenuOpen&&<div className="lp-mobile-nav" id="lp-mobile-menu"><a href="#arkacode" onClick={()=>setMobileMenuOpen(false)}>دانلود ArkaCode</a><a href="#capabilities" onClick={()=>setMobileMenuOpen(false)}>قابلیت‌ها</a><a href="#providers" onClick={()=>setMobileMenuOpen(false)}>مدل‌ها</a><a href="#workflow" onClick={()=>setMobileMenuOpen(false)}>نحوه اتصال</a><a href="#security" onClick={()=>setMobileMenuOpen(false)}>امنیت</a><button type="button" className="lp-mobile-arkachat" onClick={()=>{setMobileMenuOpen(false);onArkaChat()}}><MessageSquareText/>ورود به ArkaChat</button><button type="button" onClick={()=>{setMobileMenuOpen(false);onLogin()}}>ورود به پنل <ArrowLeft/></button></div>}
       </nav>
     </header>
 
@@ -239,6 +239,14 @@ function Landing({onLogin,onArkaChat}:{onLogin:()=>void;onArkaChat:()=>void}){
   }'`}</em></code></pre><footer><div><Check/><span><b>ساختار سازگار با OpenAI API</b><small dir="ltr">HTTP · SSE · WebSocket</small></span></div><strong>آماده اتصال</strong></footer></div>
       </section>
 
+      <section className="lp-arkacode" id="arkacode" aria-labelledby="lp-arkacode-title">
+        <div className="lp-arkacode-copy"><span><Sparkles/>محیط برنامه‌نویسی ایجنتیک</span><h2 id="lp-arkacode-title">از ایده تا تغییر کد،<br/><em>با ArkaCode.</em></h2><p>Workspace پروژه را انتخاب کنید، مدل و سطح هوشمندی را تعیین کنید و تغییرات پیشنهادی عامل را پیش از اعمال، فایل‌به‌فایل بازبینی کنید.</p><div className="lp-arkacode-points"><span><FolderOpen/><b>Context هوشمند Workspace</b></span><span><ShieldCheck/><b>پیش‌نمایش و تأیید تغییرات</b></span><span><Bot/><b>انتخاب آزاد مدل و سطح استدلال</b></span></div></div>
+        <div className="lp-arkacode-stage" aria-label="دانلود برنامه ArkaCode">
+          <div className="lp-code-studio" aria-hidden="true"><header><div><i/><i/><i/></div><b>ArkaCode</b><span>Agent ready <em/></span></header><div className="lp-studio-body"><aside><i>⌘</i><i>⌕</i><i>⑂</i><i>▹</i></aside><nav><small>EXPLORER</small><span>src</span><b>App.tsx</b><span>api.ts</span><span>styles.css</span></nav><div className="lp-studio-editor"><div><code><em>const</em> agent = <b>await</b> ArkaCode.run({'{'}</code><code>  model: <span>'selected-model'</span>,</code><code>  effort: <span>'high'</span>,</code><code>  workspace: <span>'./project'</span></code><code>{'}'})</code></div><footer><Sparkles/><span>در حال تحلیل 42 فایل و آماده‌سازی تغییرات...</span><i/><i/><i/></footer></div></div></div>
+          <div className="lp-download-grid"><article><div><span><Monitor/></span><small>Windows 10 / 11 · x64</small><h3>ArkaCode Desktop</h3><p>نسخه کامل WPF با ویرایشگر، Explorer و پیش‌نمایش تغییرات.</p></div><a href="/downloads/ArkaCode-Windows-Setup.exe" download><Download/>دانلود فایل نصب ویندوز <ArrowLeft/></a></article><article><div><span><Smartphone/></span><small>Android 8+</small><h3>ArkaCode Android</h3><p>نسخه بومی Kotlin با دسترسی امن به پوشه پروژه و Agent موبایل.</p></div><a href="/downloads/ArkaCode-Android.apk" download><Download/>دانلود فایل APK <ArrowLeft/></a></article></div>
+        </div>
+      </section>
+
       <section className="lp-security" id="security" aria-labelledby="lp-security-title">
         <div className="lp-security-visual" aria-hidden="true"><div className="lp-security-rings"><span/><span/><span/><ShieldCheck/></div><div className="lp-security-status"><i/><span><b>Policy checks enabled</b><small dir="ltr">Model · Request · Spend</small></span></div></div>
         <div className="lp-security-copy"><span>امنیت در تمام مسیر</span><h2 id="lp-security-title">کنترل کامل،<br/>همراه با حفاظت از اسرار.</h2><p>کلیدهای ارائه‌دهنده و نسخهٔ قابل‌بازیابی کلیدهای کاربران به‌شکل رمزنگاری‌شده نگهداری می‌شوند؛ برای اعتبارسنجی هر کلید نیز هش مستقل ثبت می‌شود. هر درخواست پیش از ارسال از سیاست دسترسی و موجودی عبور می‌کند.</p><div><span><LockKeyhole/><b>رمزنگاری کلیدهای مبدا</b></span><span><EyeOff/><b>هش مستقل برای اعتبارسنجی</b></span><span><Database/><b>ثبت دقیق رخداد و مصرف</b></span><span><ShieldCheck/><b>محدودیت مدل و بودجه</b></span></div></div>
@@ -247,7 +255,7 @@ function Landing({onLogin,onArkaChat}:{onLogin:()=>void;onArkaChat:()=>void}){
       <section className="lp-final" aria-labelledby="lp-final-title"><div className="lp-final-orb" aria-hidden="true"><Sparkles/></div><span>زیرساخت آماده است</span><h2 id="lp-final-title">محصول بعدی‌تان را با<br/><em>هوش بیشتری</em> بسازید.</h2><p>یک حساب، یک کیف پول و یک API برای مدل‌های فعال موردنیاز شما.</p><div><button type="button" className="lp-primary" onClick={onLogin}>ورود به AiBus <ArrowLeft/></button><a href="#capabilities">مرور دوباره قابلیت‌ها</a></div></section>
     </main>
 
-    <footer className="lp-footer"><div><Logo/><p>زیرساخت یکپارچه و فارسی API هوش مصنوعی</p></div><nav aria-label="پیوندهای پایین صفحه"><a href="#providers">مدل‌ها</a><a href="#capabilities">قابلیت‌ها</a><a href="#security">امنیت</a><button type="button" onClick={onLogin}>ورود به پنل</button></nav><small dir="ltr">© {currentYear} AiBus</small></footer>
+    <footer className="lp-footer"><div><Logo/><p>زیرساخت یکپارچه و فارسی API هوش مصنوعی</p></div><nav aria-label="پیوندهای پایین صفحه"><a href="#arkacode">دانلود ArkaCode</a><a href="#providers">مدل‌ها</a><a href="#capabilities">قابلیت‌ها</a><a href="#security">امنیت</a><button type="button" onClick={onLogin}>ورود به پنل</button></nav><small dir="ltr">© {currentYear} AiBus</small></footer>
   </div>
 }
 

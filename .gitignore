@@ -12,6 +12,9 @@ TestResults/
 playwright-report/
 .local-deploy/
 .local-test/
+.tools/
+.gradle/
+local.properties
 *.tsbuildinfo
 src/AiBus.Web/vite.config.js
 src/AiBus.Web/vite.config.d.ts

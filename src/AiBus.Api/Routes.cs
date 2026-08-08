@@ -363,7 +363,26 @@ public static class Routes
 
     private static void MapGateway(WebApplication app)
     {
-        app.MapGet("/v1/models", async (HttpRequest request, ApiKeyAuthenticator auth, AppDbContext db, CancellationToken ct) => { if (await auth.Authenticate(request, ct) is null) return Results.Json(new { error = new { message = "Invalid API key" } }, statusCode: 401); var items = await db.Models.Where(x => x.IsActive && x.Provider!.IsActive).Select(x => new { id = x.ModelId, @object = "model", created = new DateTimeOffset(x.PriceSyncedAtUtc).ToUnixTimeSeconds(), owned_by = x.Provider!.Slug }).ToListAsync(ct); return Results.Ok(new { @object = "list", data = items }); });
+        app.MapGet("/v1/models", async (HttpRequest request, ApiKeyAuthenticator auth, AppDbContext db, CancellationToken ct) =>
+        {
+            if (await auth.Authenticate(request, ct) is null)
+                return Results.Json(new { error = new { message = "Invalid API key" } }, statusCode: 401);
+            var items = await db.Models
+                .Where(x => x.IsActive && x.Provider!.IsActive)
+                .Select(x => new
+                {
+                    id = x.ModelId,
+                    @object = "model",
+                    created = new DateTimeOffset(x.PriceSyncedAtUtc).ToUnixTimeSeconds(),
+                    owned_by = x.Provider!.Slug,
+                    display_name = x.DisplayName,
+                    endpoint_path = x.EndpointPath,
+                    service_type = x.ServiceType,
+                    supports_streaming = x.SupportsStreaming
+                })
+                .ToListAsync(ct);
+            return Results.Ok(new { @object = "list", data = items });
+        });
         app.MapPost("/v1/chat/completions", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardChat(ctx, ct)).DisableAntiforgery();
         app.MapPost("/v1/responses", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardJsonEndpoint(ctx, ct)).DisableAntiforgery();
         app.MapPost("/v1/embeddings", async (HttpContext ctx, GatewayService gateway, CancellationToken ct) => await gateway.ForwardJsonEndpoint(ctx, ct)).DisableAntiforgery();
