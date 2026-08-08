@@ -78,6 +78,8 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
                 var model = await db.Models.SingleAsync(x => x.ModelId == "gemini-3.1-flash-image");
                 model.OutputPricePerMillionUsd = 999m;
                 model.PricingNotes = "administrator override";
+                var snapshot = await db.Settings.SingleAsync(x => x.Key == "catalog.model_snapshot");
+                snapshot.Value = "2026-07-27";
                 await db.SaveChangesAsync();
             }
 
@@ -89,6 +91,50 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
                 Assert.Equal("administrator override", model.PricingNotes);
                 Assert.Equal("https://generativelanguage.googleapis.com", model.UpstreamBaseUrl);
                 Assert.StartsWith("/v1beta/", model.UpstreamPath);
+            }
+        }
+        finally
+        {
+            foreach (var suffix in new[] { "", "-wal", "-shm" })
+                try { File.Delete(dbPath + suffix); } catch (IOException) { /* SQLite can release WAL shortly after disposal. */ }
+        }
+    }
+
+    [Fact]
+    public async Task Catalog_refresh_applies_known_official_price_changes_only_to_unmodified_models()
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"aibus-catalog-price-{Guid.NewGuid():N}.db");
+        var options = new DbContextOptionsBuilder<AppDbContext>().UseSqlite($"Data Source={dbPath}").Options;
+        try
+        {
+            await using (var db = new AppDbContext(options))
+            {
+                await SeedData.Initialize(db);
+                var model = await db.Models.SingleAsync(x => x.ModelId == "gpt-5.6-terra");
+                model.InputPricePerMillionUsd = 2.5m;
+                model.OutputPricePerMillionUsd = 15m;
+                model.CachedInputPricePerMillionUsd = .25m;
+                model.PricingDetailsJson = JsonSerializer.Serialize(new[]
+                {
+                    new { Label = "ورودی تا 272K", Unit = "million_text_tokens", PriceUsd = (decimal?)2.5m, Note = (string?)null },
+                    new { Label = "ورودی Cache تا 272K", Unit = "million_text_tokens", PriceUsd = (decimal?).25m, Note = (string?)null },
+                    new { Label = "خروجی تا 272K", Unit = "million_text_tokens", PriceUsd = (decimal?)15m, Note = (string?)null },
+                    new { Label = "ورودی بیش از 272K", Unit = "million_text_tokens", PriceUsd = (decimal?)5m, Note = (string?)null },
+                    new { Label = "ورودی Cache بیش از 272K", Unit = "million_text_tokens", PriceUsd = (decimal?).5m, Note = (string?)null },
+                    new { Label = "خروجی بیش از 272K", Unit = "million_text_tokens", PriceUsd = (decimal?)22.5m, Note = (string?)null }
+                });
+                (await db.Settings.SingleAsync(x => x.Key == "catalog.model_snapshot")).Value = "2026-07-27";
+                await db.SaveChangesAsync();
+            }
+
+            await using (var refreshed = new AppDbContext(options))
+            {
+                await SeedData.Initialize(refreshed);
+                var model = await refreshed.Models.AsNoTracking().SingleAsync(x => x.ModelId == "gpt-5.6-terra");
+                Assert.Equal(2m, model.InputPricePerMillionUsd);
+                Assert.Equal(12m, model.OutputPricePerMillionUsd);
+                Assert.Equal(.2m, model.CachedInputPricePerMillionUsd);
+                Assert.Equal(new DateTime(2026, 8, 8, 0, 0, 0, DateTimeKind.Utc), model.PriceSyncedAtUtc);
             }
         }
         finally

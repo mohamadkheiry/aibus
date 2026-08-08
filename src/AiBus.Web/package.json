@@ -16,7 +16,6 @@
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-hot-toast": "^2.5.1",
-    "react-multi-date-picker": "^4.5.2",
     "recharts": "^3.3.0"
   },
   "devDependencies": {

@@ -9,6 +9,9 @@ services:
       Jwt__Key: ${JWT_KEY:?JWT_KEY must be set}
       Bootstrap__ExposeSuperAdminOtp: ${EXPOSE_SUPERADMIN_OTP:-false}
       DataProtection__KeysPath: /keys
+      Backups__Enabled: "true"
+      Backups__Directory: /data/backups
+      Backups__RetentionDays: "30"
       CorsOrigins__0: http://localhost:8088
     volumes:
       - aibus-data:/data

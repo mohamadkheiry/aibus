@@ -92,8 +92,8 @@ public static class SeedData
             var models = new[]
             {
                 new ModelSeed("openai","gpt-5.6-sol","GPT-5.6 Sol",5m,30m,.5m,1050000),
-                new ModelSeed("openai","gpt-5.6-terra","GPT-5.6 Terra",2.5m,15m,.25m,1050000),
-                new ModelSeed("openai","gpt-5.6-luna","GPT-5.6 Luna",1m,6m,.1m,1050000),
+                new ModelSeed("openai","gpt-5.6-terra","GPT-5.6 Terra",2m,12m,.2m,1050000),
+                new ModelSeed("openai","gpt-5.6-luna","GPT-5.6 Luna",.2m,1.2m,.02m,1050000),
                 new ModelSeed("openai","gpt-5.4","GPT-5.4",2.5m,15m,.25m,1050000),
                 new ModelSeed("openai","gpt-5-mini","GPT-5 mini",.25m,2m,.025m,400000),
                 new ModelSeed("openai","gpt-5-nano","GPT-5 nano",.05m,.4m,.005m,400000),
@@ -240,8 +240,10 @@ public static class SeedData
 
     private static async Task EnsureModelCatalog(AppDbContext db)
     {
-        const string catalogSnapshot = "2026-07-27";
+        const string catalogSnapshot = "2026-08-08";
+        var catalogVerifiedAt = new DateTime(2026, 8, 8, 0, 0, 0, DateTimeKind.Utc);
         var catalogSnapshotSetting = await db.Settings.SingleOrDefaultAsync(x => x.Key == "catalog.model_snapshot");
+        var initializeCatalog = catalogSnapshotSetting is null;
         var refreshExistingCatalog = catalogSnapshotSetting?.Value != catalogSnapshot;
         var extraProviders = new[]
         {
@@ -295,8 +297,8 @@ public static class SeedData
         {
             new ServiceModelSeed("openai","gpt-5.6","GPT-5.6 (Sol alias)","chat","text-image","/v1/chat/completions",openAi,[P("ورودی تا 272K","million_text_tokens",5),P("ورودی Cache تا 272K","million_text_tokens",.5m),P("خروجی تا 272K","million_text_tokens",30),P("ورودی بیش از 272K","million_text_tokens",10),P("ورودی Cache بیش از 272K","million_text_tokens",1),P("خروجی بیش از 272K","million_text_tokens",45)],1050000),
             new ServiceModelSeed("openai","gpt-5.6-sol","GPT-5.6 Sol","chat","text-image","/v1/chat/completions",openAi,[P("ورودی تا 272K","million_text_tokens",5),P("ورودی Cache تا 272K","million_text_tokens",.5m),P("خروجی تا 272K","million_text_tokens",30),P("ورودی بیش از 272K","million_text_tokens",10),P("ورودی Cache بیش از 272K","million_text_tokens",1),P("خروجی بیش از 272K","million_text_tokens",45)],1050000),
-            new ServiceModelSeed("openai","gpt-5.6-terra","GPT-5.6 Terra","chat","text-image","/v1/chat/completions",openAi,[P("ورودی تا 272K","million_text_tokens",2.5m),P("ورودی Cache تا 272K","million_text_tokens",.25m),P("خروجی تا 272K","million_text_tokens",15),P("ورودی بیش از 272K","million_text_tokens",5),P("ورودی Cache بیش از 272K","million_text_tokens",.5m),P("خروجی بیش از 272K","million_text_tokens",22.5m)],1050000),
-            new ServiceModelSeed("openai","gpt-5.6-luna","GPT-5.6 Luna","chat","text-image","/v1/chat/completions",openAi,[P("ورودی تا 272K","million_text_tokens",1),P("ورودی Cache تا 272K","million_text_tokens",.1m),P("خروجی تا 272K","million_text_tokens",6),P("ورودی بیش از 272K","million_text_tokens",2),P("ورودی Cache بیش از 272K","million_text_tokens",.2m),P("خروجی بیش از 272K","million_text_tokens",9)],1050000),
+            new ServiceModelSeed("openai","gpt-5.6-terra","GPT-5.6 Terra","chat","text-image","/v1/chat/completions",openAi,[P("ورودی تا 272K","million_text_tokens",2),P("ورودی Cache تا 272K","million_text_tokens",.2m),P("خروجی تا 272K","million_text_tokens",12),P("ورودی بیش از 272K","million_text_tokens",4),P("ورودی Cache بیش از 272K","million_text_tokens",.4m),P("خروجی بیش از 272K","million_text_tokens",18)],1050000),
+            new ServiceModelSeed("openai","gpt-5.6-luna","GPT-5.6 Luna","chat","text-image","/v1/chat/completions",openAi,[P("ورودی تا 272K","million_text_tokens",.2m),P("ورودی Cache تا 272K","million_text_tokens",.02m),P("خروجی تا 272K","million_text_tokens",1.2m),P("ورودی بیش از 272K","million_text_tokens",.4m),P("ورودی Cache بیش از 272K","million_text_tokens",.04m),P("خروجی بیش از 272K","million_text_tokens",1.8m)],1050000),
             new ServiceModelSeed("openai","gpt-5.5","GPT-5.5","chat","text-image","/v1/chat/completions",openAi,[P("ورودی تا 272K","million_text_tokens",5),P("ورودی Cache تا 272K","million_text_tokens",.5m),P("خروجی تا 272K","million_text_tokens",30),P("ورودی بیش از 272K","million_text_tokens",10),P("ورودی Cache بیش از 272K","million_text_tokens",1),P("خروجی بیش از 272K","million_text_tokens",45)],1050000),
             new ServiceModelSeed("openai","gpt-5.5-pro","GPT-5.5 Pro","chat","text-image","/v1/responses",openAi,[P("ورودی تا 272K","million_text_tokens",30),P("خروجی تا 272K","million_text_tokens",180),P("ورودی بیش از 272K","million_text_tokens",60),P("خروجی بیش از 272K","million_text_tokens",270)],1050000),
             new ServiceModelSeed("openai","gpt-5.4","GPT-5.4","chat","text-image","/v1/chat/completions",openAi,[P("ورودی تا 272K","million_text_tokens",2.5m),P("ورودی Cache تا 272K","million_text_tokens",.25m),P("خروجی تا 272K","million_text_tokens",15),P("ورودی بیش از 272K","million_text_tokens",5),P("ورودی Cache بیش از 272K","million_text_tokens",.5m),P("خروجی بیش از 272K","million_text_tokens",22.5m)],1050000),
@@ -656,7 +658,21 @@ public static class SeedData
                 db.Models.Add(model); existingModels[seed.Id] = model;
                 isNew = true;
             }
-            if (!isNew && !refreshExistingCatalog) continue;
+            var seedPricingJson = JsonSerializer.Serialize(seed.Prices);
+            var previousOfficialPricingJson = seed.Id switch
+            {
+                "gpt-5.6-terra" => JsonSerializer.Serialize(new[] { P("ورودی تا 272K", "million_text_tokens", 2.5m), P("ورودی Cache تا 272K", "million_text_tokens", .25m), P("خروجی تا 272K", "million_text_tokens", 15), P("ورودی بیش از 272K", "million_text_tokens", 5), P("ورودی Cache بیش از 272K", "million_text_tokens", .5m), P("خروجی بیش از 272K", "million_text_tokens", 22.5m) }),
+                "gpt-5.6-luna" => JsonSerializer.Serialize(new[] { P("ورودی تا 272K", "million_text_tokens", 1), P("ورودی Cache تا 272K", "million_text_tokens", .1m), P("خروجی تا 272K", "million_text_tokens", 6), P("ورودی بیش از 272K", "million_text_tokens", 2), P("ورودی Cache بیش از 272K", "million_text_tokens", .2m), P("خروجی بیش از 272K", "million_text_tokens", 9) }),
+                _ => null
+            };
+            var appliesKnownOfficialChange = refreshExistingCatalog && previousOfficialPricingJson is not null && model.PricingDetailsJson == previousOfficialPricingJson;
+            if (!isNew && !initializeCatalog && !appliesKnownOfficialChange)
+            {
+                // A catalog refresh may update verification timestamps, but must never overwrite an administrator's custom price.
+                if (refreshExistingCatalog && model.PricingDetailsJson == seedPricingJson)
+                    model.PriceSyncedAtUtc = catalogVerifiedAt;
+                continue;
+            }
             model.ProviderId = provider.Id; model.DisplayName = seed.Name; model.ServiceType = seed.ServiceType; model.Modality = seed.Modality;
             model.EndpointPath = PublicEndpoint(seed); model.UpstreamPath = seed.EndpointPath; model.Region = seed.Region; model.IsPreview = seed.Preview; model.SupportsStreaming = seed.Stream;
             model.SupportsWebSocket = seed.Ws; model.ContextWindow = seed.Context; model.PricingSourceUrl = seed.SourceUrl; model.PricingNotes = seed.Notes;
@@ -669,7 +685,7 @@ public static class SeedData
                         : seed.Provider == "qwen" && seed.EndpointPath.StartsWith("/api", StringComparison.OrdinalIgnoreCase)
                             ? "https://dashscope-intl.aliyuncs.com"
                     : "";
-            model.PricingDetailsJson = JsonSerializer.Serialize(seed.Prices); model.IsActive = true; model.PriceSyncedAtUtc = new DateTime(2026, 7, 27, 0, 0, 0, DateTimeKind.Utc);
+            model.PricingDetailsJson = seedPricingJson; model.IsActive = true; model.PriceSyncedAtUtc = catalogVerifiedAt;
             model.InputPricePerMillionUsd = seed.Prices.FirstOrDefault(x => x.Unit == "million_text_tokens" && x.Label.Contains("ورودی") && !x.Label.Contains("Cache"))?.PriceUsd ?? 0;
             model.OutputPricePerMillionUsd = seed.Prices.FirstOrDefault(x => x.Unit == "million_text_tokens" && x.Label.Contains("خروجی"))?.PriceUsd ?? 0;
             model.CachedInputPricePerMillionUsd = seed.Prices.FirstOrDefault(x => x.Label.Contains("Cache"))?.PriceUsd;

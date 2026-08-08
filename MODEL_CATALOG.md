@@ -1,6 +1,6 @@
 # AiBus model catalog
 
-The built-in catalog snapshot was verified on **2026-07-27** against primary vendor documentation. Prices are stored in USD using the billing unit published by each vendor. Tiered, modality-specific, and effective-dated prices are preserved as separate pricing components; a missing public production price is represented as `contact_sales`, never estimated.
+The built-in catalog snapshot was re-verified on **2026-08-08** against primary vendor documentation. Prices are stored in USD using the billing unit published by each vendor. Tiered, modality-specific, and effective-dated prices are preserved as separate pricing components; a missing public production price is represented as `contact_sales`, never estimated. This refresh also incorporates the current GPT-5.6 Terra and Luna standard/long-context rates while preserving administrator price overrides.
 
 The snapshot key `catalog.model_snapshot` makes catalog updates idempotent. A new snapshot updates the built-in catalog once, while later administrator edits survive application restarts. Custom providers and custom models are not deactivated by catalog synchronization.
 

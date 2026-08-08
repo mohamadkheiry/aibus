@@ -21,6 +21,8 @@ builder.Services.AddScoped<SmsIrService>();
 builder.Services.AddScoped<ZarinpalService>();
 builder.Services.AddScoped<ApiKeyAuthenticator>();
 builder.Services.AddScoped<GatewayService>();
+builder.Services.AddSingleton<DatabaseBackupService>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<DatabaseBackupService>());
 builder.Services.AddHttpClient<SmsIrService>();
 builder.Services.AddHttpClient<ZarinpalService>();
 builder.Services.AddHttpClient("providers", c => c.Timeout = TimeSpan.FromMinutes(10));
@@ -46,6 +48,18 @@ builder.Services.AddSwaggerGen(o =>
 builder.Services.AddHealthChecks();
 
 var app = builder.Build();
+app.Use(async (context, next) =>
+{
+    var headers = context.Response.Headers;
+    headers.XContentTypeOptions = "nosniff";
+    headers.XFrameOptions = "DENY";
+    headers["Referrer-Policy"] = "strict-origin-when-cross-origin";
+    headers["Permissions-Policy"] = "camera=(), geolocation=(), payment=(), usb=()";
+    headers["Content-Security-Policy"] = context.Request.Path.StartsWithSegments("/swagger")
+        ? "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'self'"
+        : "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'";
+    await next();
+});
 app.UseCors();
 app.UseSwagger();
 app.UseSwaggerUI();
