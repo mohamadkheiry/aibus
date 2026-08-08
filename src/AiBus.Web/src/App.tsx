@@ -28,13 +28,14 @@ import {
   type UserKeyLimitDraft,
 } from './userKeyLimits'
 
-type Page = 'dashboard'|'models'|'keys'|'wallet'|'usage'|'tickets'|'admin-dashboard'|'providers'|'admin-models'|'users'|'admin-tickets'|'visits'|'settings'
+type Page = 'dashboard'|'chat'|'models'|'keys'|'wallet'|'usage'|'tickets'|'admin-dashboard'|'providers'|'admin-models'|'users'|'admin-tickets'|'visits'|'settings'
 type IconType = typeof LayoutDashboard
 
 const TicketsPage=lazy(()=>import('./Tickets').then(module=>({default:module.TicketsPage})))
 const MediaPlayground=lazy(()=>import('./Playground').then(module=>({default:module.Playground})))
+const ArkaChat=lazy(()=>import('./ArkaChat').then(module=>({default:module.ArkaChat})))
 
-const PAGE_LABELS:Record<Page,string>={dashboard:'نمای کلی',models:'مدل‌ها و آزمایشگاه',keys:'کلیدهای API',wallet:'کیف پول و شارژ',usage:'گزارش مصرف',tickets:'پشتیبانی و تیکت‌ها','admin-dashboard':'مرکز کنترل',providers:'ارائه‌دهندگان و کلیدها','admin-models':'کاتالوگ و قیمت‌ها',users:'کاربران','admin-tickets':'مرکز پشتیبانی',visits:'بازدید و تحلیل سایت',settings:'تنظیمات سامانه'}
+const PAGE_LABELS:Record<Page,string>={dashboard:'نمای کلی',chat:'ArkaChat',models:'مدل‌ها و آزمایشگاه',keys:'کلیدهای API',wallet:'کیف پول و شارژ',usage:'گزارش مصرف',tickets:'پشتیبانی و تیکت‌ها','admin-dashboard':'مرکز کنترل',providers:'ارائه‌دهندگان و کلیدها','admin-models':'کاتالوگ و قیمت‌ها',users:'کاربران','admin-tickets':'مرکز پشتیبانی',visits:'بازدید و تحلیل سایت',settings:'تنظیمات سامانه'}
 
 const COLORS = ['#66e3c4','#7b8cff','#ffb86b','#f472b6','#46b5ff','#a78bfa','#f87171','#34d399']
 
@@ -107,9 +108,9 @@ export default function App(){
   },[sidebar])
   const refreshUser=useCallback(()=>{void request<User>('/api/me').then(setUser)},[])
   if(loading)return <Splash />
-  if(!user)return authView==='landing'?<Landing onLogin={()=>setAuthView('login')}/>:<Login onBack={()=>setAuthView('landing')} onLogin={(u,t)=>{localStorage.setItem('aibus_token',t);setUser(u)}} />
+  if(!user)return authView==='landing'?<Landing onLogin={()=>{setPage('dashboard');setAuthView('login')}} onArkaChat={()=>{setPage('chat');setAuthView('login')}}/>:<Login onBack={()=>setAuthView('landing')} onLogin={(u,t)=>{localStorage.setItem('aibus_token',t);setUser(u)}} />
   const isAdmin=user.role==='SuperAdmin'
-  const logout=()=>{localStorage.removeItem('aibus_token');setAuthView('landing');setUser(null)}
+  const logout=()=>{localStorage.removeItem('aibus_token');setPage('dashboard');setAuthView('landing');setUser(null)}
   const closeSidebar=()=>{setSidebar(false);requestAnimationFrame(()=>sidebarToggleRef.current?.focus())}
   const navigatePage=(next:Page)=>{setPage(next);setSidebar(false);requestAnimationFrame(()=>{window.scrollTo({top:0,behavior:'auto'});contentRef.current?.focus()})}
   return <div className="app-shell">
@@ -128,7 +129,7 @@ export default function App(){
       </header>
       <div ref={contentRef} className="content" tabIndex={-1}>
         <Suspense fallback={<Loading/>}>
-        {page==='dashboard'&&<UserDashboard user={user}/>} {page==='models'&&<ModelsPage/>} {page==='keys'&&<KeysPage/>}
+        {page==='dashboard'&&<UserDashboard user={user}/>} {page==='chat'&&<ArkaChat onOpenKeys={()=>navigatePage('keys')}/>} {page==='models'&&<ModelsPage/>} {page==='keys'&&<KeysPage/>}
         {page==='wallet'&&<WalletPage user={user} refreshUser={refreshUser}/>} {page==='usage'&&<UsagePage/>} {page==='tickets'&&<TicketsPage/>}
         {page==='admin-dashboard'&&<AdminDashboard/>} {page==='providers'&&<ProvidersPage/>} {page==='admin-models'&&<AdminModelsPage/>}
         {page==='users'&&<UsersPage onImpersonate={(u,t)=>{sessionStorage.setItem('aibus_admin_token',localStorage.getItem('aibus_token')||'');localStorage.setItem('aibus_token',t);setUser(u);setPage('dashboard')}}/>}
@@ -142,7 +143,7 @@ export default function App(){
 function Splash(){return <div className="splash"><Logo/><div className="loader"/><span>در حال راه‌اندازی مرکز فرمان...</span></div>}
 function Logo(){return <div className="brand"><div className="brand-mark"><Sparkles/></div><div><b>Ai<span>Bus</span></b><small>AI Gateway</small></div></div>}
 
-function Landing({onLogin}:{onLogin:()=>void}){
+function Landing({onLogin,onArkaChat}:{onLogin:()=>void;onArkaChat:()=>void}){
   const providers=[['OA','OpenAI'],['G','Gemini'],['AI','Anthropic'],['DS','DeepSeek'],['X','xAI'],['Q','Qwen'],['M','Mistral'],['K','Kimi'],['GL','GLM'],['11','ElevenLabs'],['DG','Deepgram'],['C','Cohere']]
   const currentYear=new Date().getFullYear()
   const [mobileMenuOpen,setMobileMenuOpen]=useState(false)
@@ -180,8 +181,8 @@ function Landing({onLogin}:{onLogin:()=>void}){
       <nav ref={landingNavRef} className="lp-nav" aria-label="ناوبری اصلی">
         <a href="#landing-main" className="lp-logo-link" aria-label="AiBus، صفحه اصلی"><Logo/></a>
         <div className="lp-nav-links"><a href="#capabilities">قابلیت‌ها</a><a href="#providers">مدل‌ها</a><a href="#workflow">نحوه اتصال</a><a href="#security">امنیت</a></div>
-        <div className="lp-nav-actions"><button type="button" className="lp-login" onClick={onLogin}>ورود</button><button type="button" className="lp-primary lp-nav-cta" onClick={onLogin}>ساخت کلید API <ArrowLeft aria-hidden="true"/></button><button ref={mobileMenuToggleRef} type="button" className="lp-menu-toggle" aria-label={mobileMenuOpen?'بستن منوی صفحه':'بازکردن منوی صفحه'} aria-expanded={mobileMenuOpen} aria-controls="lp-mobile-menu" onClick={()=>setMobileMenuOpen(open=>!open)}>{mobileMenuOpen?<X/>:<Menu/>}</button></div>
-        {mobileMenuOpen&&<div className="lp-mobile-nav" id="lp-mobile-menu"><a href="#capabilities" onClick={()=>setMobileMenuOpen(false)}>قابلیت‌ها</a><a href="#providers" onClick={()=>setMobileMenuOpen(false)}>مدل‌ها</a><a href="#workflow" onClick={()=>setMobileMenuOpen(false)}>نحوه اتصال</a><a href="#security" onClick={()=>setMobileMenuOpen(false)}>امنیت</a><button type="button" onClick={()=>{setMobileMenuOpen(false);onLogin()}}>ورود به پنل <ArrowLeft/></button></div>}
+        <div className="lp-nav-actions"><button type="button" className="lp-arkachat-nav" onClick={onArkaChat}><MessageSquareText/>ArkaChat</button><button type="button" className="lp-login" onClick={onLogin}>ورود</button><button type="button" className="lp-primary lp-nav-cta" onClick={onLogin}>ساخت کلید API <ArrowLeft aria-hidden="true"/></button><button ref={mobileMenuToggleRef} type="button" className="lp-menu-toggle" aria-label={mobileMenuOpen?'بستن منوی صفحه':'بازکردن منوی صفحه'} aria-expanded={mobileMenuOpen} aria-controls="lp-mobile-menu" onClick={()=>setMobileMenuOpen(open=>!open)}>{mobileMenuOpen?<X/>:<Menu/>}</button></div>
+        {mobileMenuOpen&&<div className="lp-mobile-nav" id="lp-mobile-menu"><a href="#capabilities" onClick={()=>setMobileMenuOpen(false)}>قابلیت‌ها</a><a href="#providers" onClick={()=>setMobileMenuOpen(false)}>مدل‌ها</a><a href="#workflow" onClick={()=>setMobileMenuOpen(false)}>نحوه اتصال</a><a href="#security" onClick={()=>setMobileMenuOpen(false)}>امنیت</a><button type="button" className="lp-mobile-arkachat" onClick={()=>{setMobileMenuOpen(false);onArkaChat()}}><MessageSquareText/>ورود به ArkaChat</button><button type="button" onClick={()=>{setMobileMenuOpen(false);onLogin()}}>ورود به پنل <ArrowLeft/></button></div>}
       </nav>
     </header>
 
@@ -191,7 +192,7 @@ function Landing({onLogin}:{onLogin:()=>void}){
           <div className="lp-kicker"><span><i/>زیرساخت یکپارچه هوش مصنوعی</span><b>AI Gateway</b></div>
           <h1 id="lp-hero-title">یک API برای متن، صدا<br/>و <em>ارتباط زنده.</em></h1>
           <p>حساب را ریالی شارژ کنید، مصرف دلاری را شفاف ببینید و دسترسی مدل، سقف درخواست و آستانه هزینه هر کلید را مستقل مدیریت کنید.</p>
-          <div className="lp-hero-actions"><button type="button" className="lp-primary lp-hero-cta" onClick={onLogin}>ورود و شروع استفاده <ArrowLeft aria-hidden="true"/></button><a className="lp-secondary" href="#workflow"><Code2 aria-hidden="true"/>مشاهده نمونه اتصال</a></div>
+          <div className="lp-hero-actions"><button type="button" className="lp-primary lp-hero-cta lp-arkachat-hero" onClick={onArkaChat}><MessageSquareText aria-hidden="true"/>ArkaChat <ArrowLeft aria-hidden="true"/></button><button type="button" className="lp-secondary" onClick={onLogin}><KeyRound aria-hidden="true"/>ورود به داشبورد</button><a className="lp-secondary lp-code-link" href="#workflow"><Code2 aria-hidden="true"/>نمونه اتصال</a></div>
           <div className="lp-proof"><span><Check aria-hidden="true"/>یک API مشترک</span><span><Check aria-hidden="true"/>HTTP، SSE و WebSocket</span><span><Check aria-hidden="true"/>کنترل مدل، درخواست و هزینه</span><span><Check aria-hidden="true"/>تقویم شمسی و میلادی</span></div>
         </div>
 
@@ -266,7 +267,7 @@ function Login({onLogin,onBack}:{onLogin:(u:User,t:string)=>void;onBack:()=>void
 }
 
 function Sidebar({page,setPage,admin,open,close}:{page:Page;setPage:(p:Page)=>void;admin:boolean;open:boolean;close:()=>void}){
-  const userItems:{id:Page;label:string;icon:IconType}[]=[{id:'dashboard',label:'نمای کلی',icon:LayoutDashboard},{id:'models',label:'مدل‌ها و آزمایشگاه',icon:Bot},{id:'keys',label:'کلیدهای API',icon:KeyRound},{id:'wallet',label:'کیف پول و شارژ',icon:Wallet},{id:'usage',label:'گزارش مصرف',icon:BarChart3},{id:'tickets',label:'پشتیبانی و تیکت‌ها',icon:LifeBuoy}]
+  const userItems:{id:Page;label:string;icon:IconType}[]=[{id:'dashboard',label:'نمای کلی',icon:LayoutDashboard},{id:'chat',label:'ArkaChat',icon:MessageSquareText},{id:'models',label:'مدل‌ها و آزمایشگاه',icon:Bot},{id:'keys',label:'کلیدهای API',icon:KeyRound},{id:'wallet',label:'کیف پول و شارژ',icon:Wallet},{id:'usage',label:'گزارش مصرف',icon:BarChart3},{id:'tickets',label:'پشتیبانی و تیکت‌ها',icon:LifeBuoy}]
   const adminItems:{id:Page;label:string;icon:IconType}[]=[{id:'admin-dashboard',label:'مرکز کنترل',icon:Gauge},{id:'providers',label:'ارائه‌دهندگان و کلیدها',icon:Network},{id:'admin-models',label:'کاتالوگ و قیمت‌ها',icon:Database},{id:'users',label:'کاربران',icon:Users},{id:'admin-tickets',label:'مرکز پشتیبانی',icon:Headphones},{id:'visits',label:'بازدید و تحلیل سایت',icon:Globe2},{id:'settings',label:'تنظیمات سامانه',icon:Settings}]
   return <><aside id="app-sidebar" className={`sidebar ${open?'open':''}`} aria-label="منوی پنل"><button className="side-close" aria-label="بستن منوی پنل" onClick={close}><X/></button><Logo/><nav><small>فضای کاربری</small>{userItems.map(i=><SideItem key={i.id} {...i} active={page===i.id} click={()=>setPage(i.id)}/>)}{admin&&<><small className="admin-label">مدیریت سامانه</small>{adminItems.map(i=><SideItem key={i.id} {...i} active={page===i.id} click={()=>setPage(i.id)}/>)}</>}</nav><div className="side-status"><div className="pulse-dot"/><div><b>همه سامانه‌ها فعال‌اند</b><small>آخرین بررسی: همین حالا</small></div></div><div className="side-version">AiBus Platform <span>v1.0</span></div></aside>{open&&<div className="overlay" role="presentation" onClick={close}/>}</>
 }
