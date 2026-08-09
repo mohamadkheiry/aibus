@@ -152,6 +152,87 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
     }
 
     [Fact]
+    public async Task Central_settings_are_validated_encrypted_and_applied_to_billing()
+    {
+        string token;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var admin = await db.Users.SingleAsync(x => x.Mobile == SuperAdministrators.PrimaryMobile);
+            token = scope.ServiceProvider.GetRequiredService<TokenService>().Create(admin);
+        }
+
+        var payload = new
+        {
+            dollarRateIrr = 910000,
+            feePercent = 7.5m,
+            minimumTopUpUsd = 5m,
+            maximumTopUpUsd = 2500m,
+            smsEnabled = false,
+            smsApiKey = "test-sms-secret-value",
+            smsTemplateId = 176898,
+            otpExpiryMinutes = 3,
+            otpRequestLimit = 6,
+            otpWindowMinutes = 15,
+            otpMaxAttempts = 4,
+            zarinpalMerchantId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            paymentCallbackUrl = "https://aibus.example/api/wallet/callback",
+            sessionLifetimeHours = 24,
+            requireHttpsCallback = true,
+            allowAdminImpersonation = true
+        };
+        using (var update = Authorized(HttpMethod.Put, "/api/admin/settings", token, payload))
+        {
+            var response = await _client.SendAsync(update);
+            Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        }
+
+        using (var get = Authorized(HttpMethod.Get, "/api/admin/settings", token))
+        {
+            var response = await _client.SendAsync(get);
+            response.EnsureSuccessStatusCode();
+            using var settings = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.Equal(910000, settings.RootElement.GetProperty("dollarRateIrr").GetInt64());
+            Assert.Equal(5m, settings.RootElement.GetProperty("minimumTopUpUsd").GetDecimal());
+            Assert.Equal(24, settings.RootElement.GetProperty("sessionLifetimeHours").GetInt32());
+            Assert.True(settings.RootElement.GetProperty("paymentConfigured").GetBoolean());
+            Assert.True(settings.RootElement.GetProperty("callbackSecure").GetBoolean());
+        }
+
+        using (var quote = Authorized(HttpMethod.Get, "/api/wallet/quote?amountUsd=2", token))
+        {
+            var response = await _client.SendAsync(quote);
+            response.EnsureSuccessStatusCode();
+            using var result = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.Equal(5m, result.RootElement.GetProperty("amountUsd").GetDecimal());
+            Assert.Equal(5m, result.RootElement.GetProperty("minimumTopUpUsd").GetDecimal());
+            Assert.Equal(2500m, result.RootElement.GetProperty("maximumTopUpUsd").GetDecimal());
+        }
+
+        using (var tooSmall = Authorized(HttpMethod.Post, "/api/wallet/topup", token, new { amountUsd = 2m }))
+            Assert.Equal(HttpStatusCode.BadRequest, (await _client.SendAsync(tooSmall)).StatusCode);
+
+        using (var invalid = Authorized(HttpMethod.Put, "/api/admin/settings", token, new
+        {
+            payload.dollarRateIrr, payload.feePercent, payload.minimumTopUpUsd, payload.maximumTopUpUsd,
+            payload.smsEnabled, payload.smsApiKey, payload.smsTemplateId, payload.otpExpiryMinutes,
+            payload.otpRequestLimit, payload.otpWindowMinutes, payload.otpMaxAttempts,
+            payload.zarinpalMerchantId, paymentCallbackUrl = "http://insecure.example/callback",
+            payload.sessionLifetimeHours, requireHttpsCallback = true, payload.allowAdminImpersonation
+        }))
+            Assert.Equal(HttpStatusCode.BadRequest, (await _client.SendAsync(invalid)).StatusCode);
+
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var protectedSms = await db.Settings.SingleAsync(x => x.Key == "sms.api_key");
+            Assert.True(protectedSms.IsSecret);
+            Assert.NotEqual(payload.smsApiKey, protectedSms.Value);
+            Assert.Contains(await db.AuditLogs.ToListAsync(), x => x.Action == "settings.update");
+        }
+    }
+
+    [Fact]
     public async Task Production_bootstrap_otp_is_exposed_only_for_configured_super_admins()
     {
         using var bootstrapFactory = new BootstrapOtpFactory();

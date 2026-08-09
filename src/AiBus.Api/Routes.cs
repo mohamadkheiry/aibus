@@ -19,27 +19,33 @@ public static class Routes
 
     private static void MapAuth(WebApplication app)
     {
-        app.MapPost("/api/auth/request-otp", async ([FromBody] RequestOtpRequest req, AppDbContext db, SmsIrService sms, IConfiguration config, CancellationToken ct) =>
+        app.MapPost("/api/auth/request-otp", async ([FromBody] RequestOtpRequest req, AppDbContext db, SmsIrService sms, SettingsService settings, IConfiguration config, CancellationToken ct) =>
         {
             var mobile = NormalizeMobile(req.Mobile);
             if (mobile is null) return Results.BadRequest(new { message = "شماره موبایل معتبر نیست." });
-            var recent = await db.OtpCodes.CountAsync(x => x.Mobile == mobile && x.CreatedAtUtc > DateTime.UtcNow.AddMinutes(-10), ct);
-            if (recent >= 4) return Results.Json(new { message = "تعداد درخواست بیش از حد؛ ۱۰ دقیقه بعد تلاش کنید." }, statusCode: 429);
+            var requestLimit = SettingInt(await settings.Get("auth.otp_request_limit", "4"), 4, 1, 20);
+            var windowMinutes = SettingInt(await settings.Get("auth.otp_window_minutes", "10"), 10, 1, 60);
+            var expiryMinutes = SettingInt(await settings.Get("auth.otp_expiry_minutes", "2"), 2, 1, 10);
+            var recent = await db.OtpCodes.CountAsync(x => x.Mobile == mobile && x.CreatedAtUtc > DateTime.UtcNow.AddMinutes(-windowMinutes), ct);
+            if (recent >= requestLimit) return Results.Json(new { message = $"تعداد درخواست بیش از حد؛ {windowMinutes} دقیقه بعد تلاش کنید." }, statusCode: 429);
             var code = Hashing.RandomDigits(6);
-            db.OtpCodes.Add(new OtpCode { Mobile = mobile, CodeHash = Hashing.Sha256(code), ExpiresAtUtc = DateTime.UtcNow.AddMinutes(2) });
+            db.OtpCodes.Add(new OtpCode { Mobile = mobile, CodeHash = Hashing.Sha256(code), ExpiresAtUtc = DateTime.UtcNow.AddMinutes(expiryMinutes) });
             await db.SaveChangesAsync(ct);
             var sent = await sms.SendOtp(mobile, code, ct);
+            var smsEnabled = bool.TryParse(await settings.Get("sms.enabled", "true"), out var enabled) && enabled;
             var expose = (app.Environment.IsDevelopment() && config.GetValue("Development:ExposeOtp", false))
                 || (SuperAdministrators.Includes(mobile) && config.GetValue("Bootstrap:ExposeSuperAdminOtp", false));
-            return Results.Ok(new { message = sent ? "کد ورود ارسال شد." : "سرویس پیامک تنظیم نشده؛ حالت توسعه فعال است.", expiresIn = 120, debugCode = expose ? code : null });
+            var message = sent ? "کد ورود ارسال شد." : smsEnabled ? "ارسال پیامک ناموفق بود؛ تنظیمات SMS.ir را بررسی کنید." : "ارسال پیامک موقتاً غیرفعال است.";
+            return Results.Ok(new { message, expiresIn = expiryMinutes * 60, debugCode = expose ? code : null });
         }).AllowAnonymous();
 
-        app.MapPost("/api/auth/verify-otp", async ([FromBody] VerifyOtpRequest req, AppDbContext db, TokenService tokens, CancellationToken ct) =>
+        app.MapPost("/api/auth/verify-otp", async ([FromBody] VerifyOtpRequest req, AppDbContext db, TokenService tokens, SettingsService settings, CancellationToken ct) =>
         {
             var mobile = NormalizeMobile(req.Mobile);
             if (mobile is null) return Results.BadRequest(new { message = "شماره موبایل معتبر نیست." });
             var otp = await db.OtpCodes.Where(x => x.Mobile == mobile && !x.IsUsed).OrderByDescending(x => x.CreatedAtUtc).FirstOrDefaultAsync(ct);
-            if (otp is null || otp.ExpiresAtUtc < DateTime.UtcNow || otp.Attempts >= 5) return Results.BadRequest(new { message = "کد منقضی یا نامعتبر است." });
+            var maxAttempts = SettingInt(await settings.Get("auth.otp_max_attempts", "5"), 5, 1, 10);
+            if (otp is null || otp.ExpiresAtUtc < DateTime.UtcNow || otp.Attempts >= maxAttempts) return Results.BadRequest(new { message = "کد منقضی یا نامعتبر است." });
             otp.Attempts++;
             if (otp.CodeHash != Hashing.Sha256(req.Code)) { await db.SaveChangesAsync(ct); return Results.BadRequest(new { message = "کد واردشده صحیح نیست." }); }
             otp.IsUsed = true;
@@ -53,7 +59,8 @@ public static class Routes
             if (user.IsSuspended) return Results.Json(new { message = "حساب شما تعلیق شده است." }, statusCode: 403);
             user.LastSeenAtUtc = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
-            return Results.Ok(new { token = tokens.Create(user), user = UserView(user) });
+            var sessionHours = SettingInt(await settings.Get("security.session_lifetime_hours", "12"), 12, 1, 168);
+            return Results.Ok(new { token = tokens.Create(user, lifetimeHours: sessionHours), user = UserView(user) });
         }).AllowAnonymous();
     }
 
@@ -198,17 +205,21 @@ public static class Routes
 
         api.MapGet("/wallet/quote", async ([FromQuery] decimal amountUsd, SettingsService settings) =>
         {
-            amountUsd = Math.Clamp(amountUsd, 0, 10000);
+            var minimumTopUpUsd = SettingDecimal(await settings.Get("billing.minimum_topup_usd", "1"), 1m, 1m, 1_000_000m);
+            var maximumTopUpUsd = SettingDecimal(await settings.Get("billing.maximum_topup_usd", "10000"), 10000m, minimumTopUpUsd, 1_000_000m);
+            amountUsd = Math.Clamp(amountUsd, minimumTopUpUsd, maximumTopUpUsd);
             var rate = long.Parse(await settings.Get("currency.usd_irr", "850000"), CultureInfo.InvariantCulture);
             var feePercent = decimal.Parse(await settings.Get("billing.fee_percent", "10"), CultureInfo.InvariantCulture);
             var baseAmountIrr = (long)Math.Ceiling(amountUsd * rate);
             var feeAmountIrr = (long)Math.Ceiling(baseAmountIrr * feePercent / 100);
-            return Results.Ok(new { amountUsd, dollarRateIrr = rate, feePercent, baseAmountIrr, feeAmountIrr, totalAmountIrr = baseAmountIrr + feeAmountIrr });
+            return Results.Ok(new { amountUsd, minimumTopUpUsd, maximumTopUpUsd, dollarRateIrr = rate, feePercent, baseAmountIrr, feeAmountIrr, totalAmountIrr = baseAmountIrr + feeAmountIrr });
         });
 
         api.MapPost("/wallet/topup", async (CreateTopUpRequest req, System.Security.Claims.ClaimsPrincipal p, AppDbContext db, SettingsService settings, ZarinpalService zarinpal, CancellationToken ct) =>
         {
-            if (req.AmountUsd < 1 || req.AmountUsd > 10000) return Results.BadRequest(new { message = "مبلغ باید بین ۱ تا ۱۰٬۰۰۰ دلار باشد." });
+            var minimumTopUpUsd = SettingDecimal(await settings.Get("billing.minimum_topup_usd", "1"), 1m, 1m, 1_000_000m);
+            var maximumTopUpUsd = SettingDecimal(await settings.Get("billing.maximum_topup_usd", "10000"), 10000m, minimumTopUpUsd, 1_000_000m);
+            if (req.AmountUsd < minimumTopUpUsd || req.AmountUsd > maximumTopUpUsd) return Results.BadRequest(new { message = $"مبلغ شارژ باید بین {minimumTopUpUsd:0.##} تا {maximumTopUpUsd:0.##} دلار باشد." });
             var rate = long.Parse(await settings.Get("currency.usd_irr", "850000"), CultureInfo.InvariantCulture); var fee = decimal.Parse(await settings.Get("billing.fee_percent", "10"), CultureInfo.InvariantCulture); var irr = (long)Math.Ceiling(req.AmountUsd * rate * (1 + fee / 100));
             var tx = new WalletTransaction { UserId = p.UserId(), AmountUsd = req.AmountUsd, AmountIrr = irr, ExchangeRateIrr = rate, FeePercent = fee, Description = $"شارژ کیف پول AiBus - {req.AmountUsd:N2} USD" }; db.WalletTransactions.Add(tx); await db.SaveChangesAsync(ct);
             var callbackBase = await settings.Get("payment.callback_url", "http://localhost:5050/api/wallet/callback"); var callback = callbackBase + (callbackBase.Contains('?') ? "&" : "?") + "transactionId=" + tx.Id;
@@ -234,8 +245,70 @@ public static class Routes
     private static void MapAdmin(WebApplication app)
     {
         var admin = app.MapGroup("/api/admin").RequireAuthorization(p => p.RequireRole(Roles.SuperAdmin));
-        admin.MapGet("/settings", async (SettingsService s) => Results.Ok(new { dollarRateIrr = long.Parse(await s.Get("currency.usd_irr", "850000")), feePercent = decimal.Parse(await s.Get("billing.fee_percent", "10"), CultureInfo.InvariantCulture), smsApiKey = await s.Get("sms.api_key"), smsTemplateId = int.Parse(await s.Get("sms.template_id", "176898")), zarinpalMerchantId = await s.Get("zarinpal.merchant_id"), paymentCallbackUrl = await s.Get("payment.callback_url", "http://localhost:5050/api/wallet/callback") }));
-        admin.MapPut("/settings", async (UpdateSettingsRequest req, SettingsService s) => { await s.Set("currency.usd_irr", req.DollarRateIrr.ToString(CultureInfo.InvariantCulture)); await s.Set("billing.fee_percent", req.FeePercent.ToString(CultureInfo.InvariantCulture)); await s.Set("sms.api_key", req.SmsApiKey, true); await s.Set("sms.template_id", req.SmsTemplateId.ToString()); await s.Set("zarinpal.merchant_id", req.ZarinpalMerchantId, true); await s.Set("payment.callback_url", req.PaymentCallbackUrl); return Results.NoContent(); });
+        admin.MapGet("/settings", async (SettingsService s, AppDbContext db, CancellationToken ct) =>
+        {
+            var smsApiKey = await s.Get("sms.api_key");
+            var merchantId = await s.Get("zarinpal.merchant_id");
+            var callback = await s.Get("payment.callback_url", "https://aibus.00f.ir/api/wallet/callback");
+            var lastUpdatedAtUtc = await db.Settings.AsNoTracking().MaxAsync(x => (DateTime?)x.UpdatedAtUtc, ct);
+            return Results.Ok(new
+            {
+                dollarRateIrr = long.Parse(await s.Get("currency.usd_irr", "850000"), CultureInfo.InvariantCulture),
+                feePercent = decimal.Parse(await s.Get("billing.fee_percent", "10"), CultureInfo.InvariantCulture),
+                minimumTopUpUsd = SettingDecimal(await s.Get("billing.minimum_topup_usd", "1"), 1m, 1m, 1_000_000m),
+                maximumTopUpUsd = SettingDecimal(await s.Get("billing.maximum_topup_usd", "10000"), 10000m, 1m, 1_000_000m),
+                smsEnabled = bool.TryParse(await s.Get("sms.enabled", "true"), out var smsEnabled) && smsEnabled,
+                smsApiKey,
+                smsTemplateId = int.Parse(await s.Get("sms.template_id", "176898"), CultureInfo.InvariantCulture),
+                otpExpiryMinutes = SettingInt(await s.Get("auth.otp_expiry_minutes", "2"), 2, 1, 10),
+                otpRequestLimit = SettingInt(await s.Get("auth.otp_request_limit", "4"), 4, 1, 20),
+                otpWindowMinutes = SettingInt(await s.Get("auth.otp_window_minutes", "10"), 10, 1, 60),
+                otpMaxAttempts = SettingInt(await s.Get("auth.otp_max_attempts", "5"), 5, 1, 10),
+                zarinpalMerchantId = merchantId,
+                paymentCallbackUrl = callback,
+                sessionLifetimeHours = SettingInt(await s.Get("security.session_lifetime_hours", "12"), 12, 1, 168),
+                requireHttpsCallback = bool.TryParse(await s.Get("security.require_https_callback", "true"), out var requireHttps) && requireHttps,
+                allowAdminImpersonation = !bool.TryParse(await s.Get("security.allow_admin_impersonation", "true"), out var allowImpersonation) || allowImpersonation,
+                smsConfigured = !string.IsNullOrWhiteSpace(smsApiKey),
+                paymentConfigured = Guid.TryParse(merchantId, out _),
+                callbackSecure = Uri.TryCreate(callback, UriKind.Absolute, out var callbackUri) && callbackUri.Scheme == Uri.UriSchemeHttps,
+                lastUpdatedAtUtc
+            });
+        });
+        admin.MapPut("/settings", async (UpdateSettingsRequest req, SettingsService s, AppDbContext db, System.Security.Claims.ClaimsPrincipal actor, CancellationToken ct) =>
+        {
+            var validationError = ValidateSettings(req);
+            if (validationError is not null) return Results.BadRequest(new { message = validationError });
+            await s.SetMany(new (string Key, string Value, bool Secret)[]
+            {
+                ("currency.usd_irr", req.DollarRateIrr.ToString(CultureInfo.InvariantCulture), false),
+                ("billing.fee_percent", req.FeePercent.ToString(CultureInfo.InvariantCulture), false),
+                ("billing.minimum_topup_usd", req.MinimumTopUpUsd.ToString(CultureInfo.InvariantCulture), false),
+                ("billing.maximum_topup_usd", req.MaximumTopUpUsd.ToString(CultureInfo.InvariantCulture), false),
+                ("sms.enabled", req.SmsEnabled.ToString(), false),
+                ("sms.api_key", req.SmsApiKey.Trim(), true),
+                ("sms.template_id", req.SmsTemplateId.ToString(CultureInfo.InvariantCulture), false),
+                ("auth.otp_expiry_minutes", req.OtpExpiryMinutes.ToString(CultureInfo.InvariantCulture), false),
+                ("auth.otp_request_limit", req.OtpRequestLimit.ToString(CultureInfo.InvariantCulture), false),
+                ("auth.otp_window_minutes", req.OtpWindowMinutes.ToString(CultureInfo.InvariantCulture), false),
+                ("auth.otp_max_attempts", req.OtpMaxAttempts.ToString(CultureInfo.InvariantCulture), false),
+                ("zarinpal.merchant_id", req.ZarinpalMerchantId.Trim(), true),
+                ("payment.callback_url", req.PaymentCallbackUrl.Trim(), false),
+                ("security.session_lifetime_hours", req.SessionLifetimeHours.ToString(CultureInfo.InvariantCulture), false),
+                ("security.require_https_callback", req.RequireHttpsCallback.ToString(), false),
+                ("security.allow_admin_impersonation", req.AllowAdminImpersonation.ToString(), false)
+            }, ct);
+            db.AuditLogs.Add(new AuditLog { ActorUserId = actor.UserId(), Action = "settings.update", EntityType = "system", EntityId = "central", DetailsJson = JsonSerializer.Serialize(new { req.DollarRateIrr, req.FeePercent, req.MinimumTopUpUsd, req.MaximumTopUpUsd, req.SmsEnabled, req.SmsTemplateId, req.OtpExpiryMinutes, req.OtpRequestLimit, req.OtpWindowMinutes, req.OtpMaxAttempts, req.PaymentCallbackUrl, req.SessionLifetimeHours, req.RequireHttpsCallback, req.AllowAdminImpersonation }) });
+            await db.SaveChangesAsync(ct);
+            return Results.NoContent();
+        });
+        admin.MapPost("/settings/test-sms", async (TestSmsRequest req, SmsIrService sms, CancellationToken ct) =>
+        {
+            var mobile = NormalizeMobile(req.Mobile);
+            if (mobile is null) return Results.BadRequest(new { message = "شماره موبایل آزمایشی معتبر نیست." });
+            var sent = await sms.SendOtp(mobile, Hashing.RandomDigits(6), ct);
+            return sent ? Results.Ok(new { message = "پیامک آزمایشی با موفقیت ارسال شد." }) : Results.Json(new { message = "ارسال پیامک ناموفق بود؛ کلید، قالب و وضعیت سرویس SMS.ir را بررسی کنید." }, statusCode: 502);
+        });
 
         admin.MapGet("/providers", async (AppDbContext db, SecretProtector secrets, CancellationToken ct) => Results.Ok((await db.Providers.AsNoTracking().Include(x => x.Credentials).Include(x => x.Models).OrderBy(x => x.Name).ToListAsync(ct)).Select(x => new { x.Id, x.Name, x.Slug, x.LogoUrl, x.BaseUrl, x.PricingUrl, x.Protocol, x.IsActive, modelCount = x.Models.Count, credentials = x.Credentials.Where(c => !string.IsNullOrEmpty(c.ProtectedApiKey)).Select(c => new { c.Id, c.Label, apiKey = secrets.Unprotect(c.ProtectedApiKey), c.IsActive, c.InitialBalanceUsd, c.RemainingBalanceUsd, c.AlertThresholdUsd, c.RequestCount, c.LastUsedAtUtc, c.LastError, c.LastErrorCode, c.LastErrorAtUtc, isQuotaExhausted = c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode, isLow = c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode || c.InitialBalanceUsd > 0 && c.RemainingBalanceUsd <= c.AlertThresholdUsd }) })));
         admin.MapPost("/providers", async (ProviderRequest req, AppDbContext db, CancellationToken ct) => { var p = new AiProvider { Name = req.Name, Slug = req.Slug, LogoUrl = req.LogoUrl, BaseUrl = req.BaseUrl, PricingUrl = req.PricingUrl, Protocol = req.Protocol, IsActive = req.IsActive }; db.Add(p); await db.SaveChangesAsync(ct); return Results.Ok(p); });
@@ -321,7 +394,15 @@ public static class Routes
         admin.MapDelete("/user-keys/{id:guid}", async (Guid id, AppDbContext db, CancellationToken ct) => { var key = await db.UserApiKeys.FindAsync([id], ct); if (key is null) return Results.NotFound(); db.UserApiKeys.Remove(key); await db.SaveChangesAsync(ct); return Results.NoContent(); });
         admin.MapDelete("/users/{id:guid}", async (Guid id, AppDbContext db, CancellationToken ct) => { var user = await db.Users.Include(x => x.ApiKeys).SingleOrDefaultAsync(x => x.Id == id, ct); if (user is null) return Results.NotFound(); if (user.Role == Roles.SuperAdmin) return Results.BadRequest(new { message = "سوپرادمین قابل حذف نیست." }); db.Users.Remove(user); await db.SaveChangesAsync(ct); return Results.NoContent(); });
         admin.MapPost("/users/{id:guid}/wallet", async (Guid id, WalletAdjustRequest req, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, CancellationToken ct) => { var u = await db.Users.FindAsync([id], ct); if (u is null) return Results.NotFound(); if (u.WalletUsd + req.AmountUsd < 0) return Results.BadRequest(new { message = "موجودی نمی‌تواند منفی شود." }); u.WalletUsd += req.AmountUsd; db.WalletTransactions.Add(new WalletTransaction { UserId = id, Type = "admin_adjustment", AmountUsd = req.AmountUsd, Status = "completed", Description = req.Description, CompletedAtUtc = DateTime.UtcNow }); db.AuditLogs.Add(new AuditLog { ActorUserId = actor.UserId(), Action = "wallet.adjust", EntityType = "user", EntityId = id.ToString(), DetailsJson = JsonSerializer.Serialize(req) }); await db.SaveChangesAsync(ct); return Results.Ok(new { u.WalletUsd }); });
-        admin.MapPost("/users/{id:guid}/impersonate", async (Guid id, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, TokenService tokens, CancellationToken ct) => { var u = await db.Users.FindAsync([id], ct); return u is null ? Results.NotFound() : Results.Ok(new { token = tokens.Create(u, actor.UserId()), user = UserView(u) }); });
+        admin.MapPost("/users/{id:guid}/impersonate", async (Guid id, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, TokenService tokens, SettingsService settings, CancellationToken ct) =>
+        {
+            if (bool.TryParse(await settings.Get("security.allow_admin_impersonation", "true"), out var allowed) && !allowed)
+                return Results.Json(new { message = "ورود مدیریتی به پنل کاربران در تنظیمات امنیتی غیرفعال شده است." }, statusCode: 403);
+            var user = await db.Users.FindAsync([id], ct);
+            if (user is null) return Results.NotFound();
+            var sessionHours = SettingInt(await settings.Get("security.session_lifetime_hours", "12"), 12, 1, 168);
+            return Results.Ok(new { token = tokens.Create(user, actor.UserId(), sessionHours), user = UserView(user) });
+        });
 
         admin.MapGet("/tickets", async (AppDbContext db, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] string? priority, CancellationToken ct) =>
         {
@@ -432,6 +513,26 @@ public static class Routes
         code = "invalid_credential_balance",
         message = "مقادیر موجودی و هشدار باید نامنفی و حداکثر یک میلیارد دلار باشند؛ موجودی فعلی نیز نمی‌تواند از موجودی اولیه بیشتر باشد."
     });
+    private static int SettingInt(string value, int fallback, int minimum, int maximum) =>
+        int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed) ? Math.Clamp(parsed, minimum, maximum) : fallback;
+    private static decimal SettingDecimal(string value, decimal fallback, decimal minimum, decimal maximum) =>
+        decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out var parsed) ? Math.Clamp(parsed, minimum, maximum) : fallback;
+    private static string? ValidateSettings(UpdateSettingsRequest req)
+    {
+        if (req.DollarRateIrr is < 10_000 or > 100_000_000) return "نرخ دلار باید بین ۱۰٬۰۰۰ تا ۱۰۰٬۰۰۰٬۰۰۰ ریال باشد.";
+        if (req.FeePercent is < 0 or > 100) return "کارمزد و مالیات باید بین صفر تا ۱۰۰ درصد باشد.";
+        if (req.MinimumTopUpUsd is < 1 or > 1_000_000 || req.MaximumTopUpUsd < req.MinimumTopUpUsd || req.MaximumTopUpUsd > 1_000_000) return "بازه شارژ دلاری معتبر نیست.";
+        if (req.SmsEnabled && string.IsNullOrWhiteSpace(req.SmsApiKey)) return "برای فعال‌سازی پیامک، API Key سرویس SMS.ir الزامی است.";
+        if (req.SmsTemplateId <= 0) return "Template ID پیامک معتبر نیست.";
+        if (req.OtpExpiryMinutes is < 1 or > 10) return "اعتبار کد ورود باید بین ۱ تا ۱۰ دقیقه باشد.";
+        if (req.OtpRequestLimit is < 1 or > 20 || req.OtpWindowMinutes is < 1 or > 60) return "محدودیت درخواست کد ورود معتبر نیست.";
+        if (req.OtpMaxAttempts is < 1 or > 10) return "تعداد تلاش ناموفق باید بین ۱ تا ۱۰ باشد.";
+        if (!string.IsNullOrWhiteSpace(req.ZarinpalMerchantId) && !Guid.TryParse(req.ZarinpalMerchantId, out _)) return "Merchant ID زرین‌پال باید یک UUID معتبر باشد.";
+        if (!Uri.TryCreate(req.PaymentCallbackUrl, UriKind.Absolute, out var callback) || callback.Scheme != Uri.UriSchemeHttp && callback.Scheme != Uri.UriSchemeHttps) return "آدرس Callback پرداخت معتبر نیست.";
+        if (req.RequireHttpsCallback && callback.Scheme != Uri.UriSchemeHttps) return "طبق سیاست امنیتی، Callback پرداخت باید از HTTPS استفاده کند.";
+        if (req.SessionLifetimeHours is < 1 or > 168) return "طول نشست باید بین ۱ تا ۱۶۸ ساعت باشد.";
+        return null;
+    }
     private static string Clean(string? value, int max) { var text = (value ?? "").Trim(); return text[..Math.Min(max, text.Length)]; }
     private static string ValidTicketCategory(string value) => TicketCategories.Contains(value) ? value : "general";
     private static string ValidTicketPriority(string value) => TicketPriorities.Contains(value) ? value : "normal";

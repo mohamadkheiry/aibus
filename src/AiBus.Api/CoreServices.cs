@@ -30,7 +30,7 @@ public static class Hashing
 
 public sealed class TokenService(IConfiguration config)
 {
-    public string Create(AppUser user, Guid? impersonatedBy = null)
+    public string Create(AppUser user, Guid? impersonatedBy = null, int lifetimeHours = 12)
     {
         var claims = new List<Claim>
         {
@@ -43,7 +43,7 @@ public sealed class TokenService(IConfiguration config)
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(config["Jwt:Key"]!));
         var token = new JwtSecurityToken(
             config["Jwt:Issuer"], config["Jwt:Audience"], claims,
-            expires: DateTime.UtcNow.AddHours(12), signingCredentials: new SigningCredentials(key, SecurityAlgorithms.HmacSha256));
+            expires: DateTime.UtcNow.AddHours(Math.Clamp(lifetimeHours, 1, 168)), signingCredentials: new SigningCredentials(key, SecurityAlgorithms.HmacSha256));
         return new JwtSecurityTokenHandler().WriteToken(token);
     }
 }
@@ -70,12 +70,35 @@ public sealed class SettingsService(AppDbContext db, SecretProtector secrets)
         setting.UpdatedAtUtc = DateTime.UtcNow;
         await db.SaveChangesAsync();
     }
+
+    public async Task SetMany(IEnumerable<(string Key, string Value, bool Secret)> values, CancellationToken ct = default)
+    {
+        foreach (var (key, value, secret) in values)
+        {
+            var setting = await db.Settings.FindAsync([key], ct);
+            if (setting is null)
+            {
+                setting = new SystemSetting { Key = key };
+                db.Settings.Add(setting);
+            }
+            setting.Value = secret ? secrets.Protect(value) : value;
+            setting.IsSecret = secret;
+            setting.UpdatedAtUtc = DateTime.UtcNow;
+        }
+        await db.SaveChangesAsync(ct);
+    }
 }
 
 public sealed class SmsIrService(HttpClient http, SettingsService settings, ILogger<SmsIrService> logger)
 {
     public async Task<bool> SendOtp(string mobile, string code, CancellationToken ct)
     {
+        var enabled = bool.TryParse(await settings.Get("sms.enabled", "true"), out var isEnabled) && isEnabled;
+        if (!enabled)
+        {
+            logger.LogInformation("SMS.ir delivery is disabled by the administrator.");
+            return false;
+        }
         var apiKey = await settings.Get("sms.api_key");
         if (string.IsNullOrWhiteSpace(apiKey))
         {

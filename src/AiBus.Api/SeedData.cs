@@ -64,8 +64,18 @@ public static class SeedData
         {
             ["currency.usd_irr"] = "850000",
             ["billing.fee_percent"] = "10",
+            ["billing.minimum_topup_usd"] = "1",
+            ["billing.maximum_topup_usd"] = "10000",
+            ["sms.enabled"] = "true",
             ["sms.template_id"] = "176898",
-            ["payment.callback_url"] = "http://localhost:5173/payment/callback"
+            ["auth.otp_expiry_minutes"] = "2",
+            ["auth.otp_request_limit"] = "4",
+            ["auth.otp_window_minutes"] = "10",
+            ["auth.otp_max_attempts"] = "5",
+            ["payment.callback_url"] = "http://localhost:5050/api/wallet/callback",
+            ["security.session_lifetime_hours"] = "12",
+            ["security.require_https_callback"] = "true",
+            ["security.allow_admin_impersonation"] = "true"
         };
         foreach (var item in defaults)
             if (!await db.Settings.AnyAsync(x => x.Key == item.Key)) db.Settings.Add(new SystemSetting { Key = item.Key, Value = item.Value });

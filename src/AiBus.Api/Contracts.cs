@@ -9,7 +9,24 @@ public sealed record CreateUserKeyRequest(string Name, int? RequestLimit, decima
 public sealed record UpdateUserKeyRequest(string Name, bool IsActive, int? RequestLimit, decimal? SpendLimitUsd, string AccessMode, string[] ModelRules);
 public sealed record UpdateUserKeyLimitsRequest(int? RequestLimit, decimal? SpendLimitUsd);
 public sealed record CreateTopUpRequest(decimal AmountUsd);
-public sealed record UpdateSettingsRequest(long DollarRateIrr, decimal FeePercent, string SmsApiKey, int SmsTemplateId, string ZarinpalMerchantId, string PaymentCallbackUrl);
+public sealed record UpdateSettingsRequest(
+    long DollarRateIrr,
+    decimal FeePercent,
+    decimal MinimumTopUpUsd,
+    decimal MaximumTopUpUsd,
+    bool SmsEnabled,
+    string SmsApiKey,
+    int SmsTemplateId,
+    int OtpExpiryMinutes,
+    int OtpRequestLimit,
+    int OtpWindowMinutes,
+    int OtpMaxAttempts,
+    string ZarinpalMerchantId,
+    string PaymentCallbackUrl,
+    int SessionLifetimeHours,
+    bool RequireHttpsCallback,
+    bool AllowAdminImpersonation);
+public sealed record TestSmsRequest(string Mobile);
 public sealed record ProviderRequest(string Name, string Slug, string LogoUrl, string BaseUrl, string PricingUrl, string Protocol, bool IsActive);
 public sealed record CredentialRequest(string Label, string ApiKey, bool IsActive, decimal InitialBalanceUsd, decimal RemainingBalanceUsd, decimal AlertThresholdUsd);
 public sealed record PricingComponentRequest(string Label, string Unit, decimal? PriceUsd, string? Note);
