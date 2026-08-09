@@ -253,58 +253,84 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
     }
 
     [Fact]
-    public async Task Additional_super_admin_is_promoted_on_startup_and_cannot_be_suspended_or_deleted()
+    public async Task Roles_can_be_changed_live_except_for_the_primary_super_admin()
     {
+        string primaryToken;
+        string delegatedToken;
+        Guid primaryId;
+        Guid delegatedId;
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var administrator = await db.Users.SingleAsync(x => x.Mobile == SuperAdministrators.AdditionalMobile);
-            administrator.Role = Roles.User;
-            administrator.IsSuspended = true;
-            administrator.DisplayName = "کاربر 9381";
+            var primary = await db.Users.SingleAsync(x => x.Mobile == SuperAdministrators.PrimaryMobile);
+            var delegated = await db.Users.SingleAsync(x => x.Mobile == SuperAdministrators.RequestedAdditionalMobile);
+            Assert.Equal(Roles.SuperAdmin, primary.Role);
+            Assert.Equal(Roles.SuperAdmin, delegated.Role);
+            var tokens = scope.ServiceProvider.GetRequiredService<TokenService>();
+            primaryToken = tokens.Create(primary);
+            delegatedToken = tokens.Create(delegated);
+            primaryId = primary.Id;
+            delegatedId = delegated.Id;
+        }
+
+        using (var demote = Authorized(HttpMethod.Put, $"/api/admin/users/{delegatedId}/role", primaryToken, new { role = Roles.User }))
+        {
+            var response = await _client.SendAsync(demote);
+            response.EnsureSuccessStatusCode();
+        }
+
+        using (var scope = factory.Services.CreateScope())
+            await SeedData.Initialize(scope.ServiceProvider.GetRequiredService<AppDbContext>());
+
+        using (var staleAdminRequest = Authorized(HttpMethod.Get, "/api/admin/settings", delegatedToken))
+        {
+            var response = await _client.SendAsync(staleAdminRequest);
+            Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        }
+
+        using (var demotePrimary = Authorized(HttpMethod.Put, $"/api/admin/users/{primaryId}/role", primaryToken, new { role = Roles.User }))
+        {
+            var response = await _client.SendAsync(demotePrimary);
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        }
+
+        using (var promote = Authorized(HttpMethod.Put, $"/api/admin/users/{delegatedId}/role", primaryToken, new { role = Roles.SuperAdmin }))
+            (await _client.SendAsync(promote)).EnsureSuccessStatusCode();
+
+        using var verificationScope = factory.Services.CreateScope();
+        var verificationDb = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        Assert.Equal(Roles.SuperAdmin, (await verificationDb.Users.FindAsync(delegatedId))!.Role);
+        Assert.Contains(await verificationDb.AuditLogs.ToListAsync(), x => x.Action == "user.role.update" && x.EntityId == delegatedId.ToString());
+    }
+
+    [Fact]
+    public async Task User_can_set_or_clear_an_optional_nickname()
+    {
+        string token;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var user = await db.Users.SingleOrDefaultAsync(x => x.Mobile == "09351112233")
+                       ?? new AppUser { Mobile = "09351112233", DisplayName = "کاربر 2233" };
+            if (db.Entry(user).State == EntityState.Detached) db.Users.Add(user);
             await db.SaveChangesAsync();
-
-            await SeedData.Initialize(db);
-
-            Assert.Equal(Roles.SuperAdmin, administrator.Role);
-            Assert.False(administrator.IsSuspended);
-            Assert.Equal(SuperAdministrators.DisplayName, administrator.DisplayName);
-            Assert.Equal(
-                SuperAdministrators.Mobiles.Count,
-                await db.Users.CountAsync(x => x.Role == Roles.SuperAdmin && SuperAdministrators.Mobiles.Contains(x.Mobile)));
+            token = scope.ServiceProvider.GetRequiredService<TokenService>().Create(user);
         }
 
-        var otpResponse = await _client.PostAsJsonAsync("/api/auth/request-otp", new { mobile = SuperAdministrators.AdditionalMobile });
-        otpResponse.EnsureSuccessStatusCode();
-        var otp = await otpResponse.Content.ReadFromJsonAsync<OtpResponse>();
-        Assert.NotNull(otp?.DebugCode);
-
-        var loginResponse = await _client.PostAsJsonAsync("/api/auth/verify-otp", new
+        using (var rename = Authorized(HttpMethod.Put, "/api/me", token, new { displayName = "  محمد  " }))
         {
-            mobile = SuperAdministrators.AdditionalMobile,
-            code = otp!.DebugCode
-        });
-        loginResponse.EnsureSuccessStatusCode();
-        var login = await loginResponse.Content.ReadFromJsonAsync<LoginResponse>();
-        Assert.Equal(Roles.SuperAdmin, login?.User.Role);
-
-        using (var suspendRequest = Authorized(
-                   HttpMethod.Post,
-                   $"/api/admin/users/{login!.User.Id}/suspend",
-                   login.Token,
-                   new { isSuspended = true }))
-        {
-            var suspendResponse = await _client.SendAsync(suspendRequest);
-            Assert.Equal(HttpStatusCode.BadRequest, suspendResponse.StatusCode);
+            var response = await _client.SendAsync(rename);
+            response.EnsureSuccessStatusCode();
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.Equal("محمد", body.RootElement.GetProperty("displayName").GetString());
         }
 
-        using (var deleteRequest = Authorized(
-                   HttpMethod.Delete,
-                   $"/api/admin/users/{login.User.Id}",
-                   login.Token))
+        using (var clear = Authorized(HttpMethod.Put, "/api/me", token, new { displayName = "   " }))
         {
-            var deleteResponse = await _client.SendAsync(deleteRequest);
-            Assert.Equal(HttpStatusCode.BadRequest, deleteResponse.StatusCode);
+            var response = await _client.SendAsync(clear);
+            response.EnsureSuccessStatusCode();
+            using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+            Assert.Equal("کاربر 2233", body.RootElement.GetProperty("displayName").GetString());
         }
     }
 

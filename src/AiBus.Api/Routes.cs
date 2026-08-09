@@ -55,7 +55,7 @@ public static class Routes
                 user = new AppUser { Mobile = mobile, DisplayName = $"کاربر {mobile[^4..]}" };
                 db.Users.Add(user);
             }
-            SuperAdministrators.EnsureRole(user);
+            SuperAdministrators.EnsurePrimaryRole(user);
             if (user.IsSuspended) return Results.Json(new { message = "حساب شما تعلیق شده است." }, statusCode: 403);
             user.LastSeenAtUtc = DateTime.UtcNow;
             await db.SaveChangesAsync(ct);
@@ -74,7 +74,10 @@ public static class Routes
         api.MapPut("/me", async (UpdateProfileRequest req, System.Security.Claims.ClaimsPrincipal principal, AppDbContext db, CancellationToken ct) =>
         {
             var user = await db.Users.FindAsync([principal.UserId()], ct); if (user is null) return Results.NotFound();
-            user.DisplayName = req.DisplayName.Trim()[..Math.Min(100, req.DisplayName.Trim().Length)]; await db.SaveChangesAsync(ct); return Results.Ok(UserView(user));
+            var nickname = Clean(req.DisplayName, 50);
+            user.DisplayName = nickname.Length == 0 ? $"کاربر {user.Mobile[^4..]}" : nickname;
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(UserView(user));
         });
         api.MapGet("/models", async (AppDbContext db, CancellationToken ct) =>
         {
@@ -245,6 +248,18 @@ public static class Routes
     private static void MapAdmin(WebApplication app)
     {
         var admin = app.MapGroup("/api/admin").RequireAuthorization(p => p.RequireRole(Roles.SuperAdmin));
+        admin.AddEndpointFilter(async (context, next) =>
+        {
+            var principal = context.HttpContext.User;
+            var idValue = principal.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value;
+            if (!Guid.TryParse(idValue, out var actorId)) return Results.Unauthorized();
+            var db = context.HttpContext.RequestServices.GetRequiredService<AppDbContext>();
+            var activeAdministrator = await db.Users.AsNoTracking()
+                .AnyAsync(x => x.Id == actorId && x.Role == Roles.SuperAdmin && !x.IsSuspended, context.HttpContext.RequestAborted);
+            return activeAdministrator
+                ? await next(context)
+                : Results.Json(new { message = "دسترسی مدیریتی این حساب لغو شده است؛ لطفاً دوباره وارد شوید." }, statusCode: 403);
+        });
         admin.MapGet("/settings", async (SettingsService s, AppDbContext db, CancellationToken ct) =>
         {
             var smsApiKey = await s.Get("sms.api_key");
@@ -387,8 +402,28 @@ public static class Routes
         admin.MapPut("/models/{id:guid}", async (Guid id, ModelRequest req, AppDbContext db, CancellationToken ct) => { var m = await db.Models.FindAsync([id], ct); if (m is null) return Results.NotFound(); Apply(m, req); await db.SaveChangesAsync(ct); return Results.NoContent(); });
         admin.MapDelete("/models/{id:guid}", async (Guid id, AppDbContext db, CancellationToken ct) => { var m = await db.Models.FindAsync([id], ct); if (m is null) return Results.NotFound(); m.IsActive = false; await db.SaveChangesAsync(ct); return Results.NoContent(); });
 
-        admin.MapGet("/users", async (AppDbContext db, [FromQuery] string? search, [FromQuery] string? sort, CancellationToken ct) => { var q = db.Users.AsNoTracking().Include(x => x.ApiKeys).AsQueryable(); if (!string.IsNullOrWhiteSpace(search)) q = q.Where(x => x.Mobile.Contains(search) || x.DisplayName.Contains(search)); q = sort switch { "wallet" => q.OrderByDescending(x => (double)x.WalletUsd), "requests" => q.OrderByDescending(x => x.ApiKeys.Sum(k => k.RequestCount)), _ => q.OrderByDescending(x => x.CreatedAtUtc) }; return Results.Ok(await q.Select(x => new { x.Id, x.Mobile, x.DisplayName, x.Role, x.IsSuspended, x.WalletUsd, x.CreatedAtUtc, x.LastSeenAtUtc, apiKeyCount = x.ApiKeys.Count, requests = x.ApiKeys.Sum(k => k.RequestCount), spentUsd = x.ApiKeys.Sum(k => (double)k.SpentUsd) }).ToListAsync(ct)); });
+        admin.MapGet("/users", async (AppDbContext db, [FromQuery] string? search, [FromQuery] string? sort, CancellationToken ct) => { var q = db.Users.AsNoTracking().Include(x => x.ApiKeys).AsQueryable(); if (!string.IsNullOrWhiteSpace(search)) q = q.Where(x => x.Mobile.Contains(search) || x.DisplayName.Contains(search)); q = sort switch { "wallet" => q.OrderByDescending(x => (double)x.WalletUsd), "requests" => q.OrderByDescending(x => x.ApiKeys.Sum(k => k.RequestCount)), _ => q.OrderByDescending(x => x.CreatedAtUtc) }; return Results.Ok(await q.Select(x => new { x.Id, x.Mobile, x.DisplayName, x.Role, isPrimarySuperAdmin = x.Mobile == SuperAdministrators.PrimaryMobile, x.IsSuspended, x.WalletUsd, x.CreatedAtUtc, x.LastSeenAtUtc, apiKeyCount = x.ApiKeys.Count, requests = x.ApiKeys.Sum(k => k.RequestCount), spentUsd = x.ApiKeys.Sum(k => (double)k.SpentUsd) }).ToListAsync(ct)); });
         admin.MapGet("/users/{id:guid}/keys", async (Guid id, AppDbContext db, CancellationToken ct) => Results.Ok(await db.UserApiKeys.AsNoTracking().Where(x => x.UserId == id).OrderByDescending(x => x.CreatedAtUtc).Select(x => new { x.Id, x.Name, x.KeyPrefix, x.IsActive, x.RequestLimit, x.SpendLimitUsd, x.RequestCount, x.SpentUsd, x.AccessMode, x.ModelRulesJson, x.CreatedAtUtc, x.LastUsedAtUtc }).ToListAsync(ct)));
+        admin.MapPut("/users/{id:guid}/role", async (Guid id, UpdateUserRoleRequest req, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, CancellationToken ct) =>
+        {
+            if (req.Role is not (Roles.User or Roles.SuperAdmin)) return Results.BadRequest(new { message = "نقش انتخاب‌شده معتبر نیست." });
+            var user = await db.Users.FindAsync([id], ct);
+            if (user is null) return Results.NotFound();
+            if (SuperAdministrators.IsPrimary(user.Mobile) && req.Role != Roles.SuperAdmin)
+                return Results.BadRequest(new { message = "سوپرادمین اصلی سامانه قابل خلع نیست." });
+            if (actor.UserId() == id && user.Role != req.Role)
+                return Results.BadRequest(new { message = "برای جلوگیری از قطع دسترسی، نمی‌توانید نقش حساب فعلی خودتان را تغییر دهید." });
+            var previousRole = user.Role;
+            user.Role = req.Role;
+            if (req.Role == Roles.SuperAdmin) user.IsSuspended = false;
+            db.AuditLogs.Add(new AuditLog
+            {
+                ActorUserId = actor.UserId(), Action = "user.role.update", EntityType = "user", EntityId = id.ToString(),
+                DetailsJson = JsonSerializer.Serialize(new { previousRole, role = req.Role, user.Mobile })
+            });
+            await db.SaveChangesAsync(ct);
+            return Results.Ok(UserView(user));
+        });
         admin.MapPost("/users/{id:guid}/suspend", async (Guid id, SuspendRequest req, AppDbContext db, CancellationToken ct) => { var u = await db.Users.FindAsync([id], ct); if (u is null) return Results.NotFound(); if (u.Role == Roles.SuperAdmin) return Results.BadRequest(new { message = "سوپرادمین قابل تعلیق نیست." }); u.IsSuspended = req.IsSuspended; await db.SaveChangesAsync(ct); return Results.NoContent(); });
         admin.MapPost("/user-keys/{id:guid}/suspend", async (Guid id, SuspendRequest req, AppDbContext db, CancellationToken ct) => { var key = await db.UserApiKeys.FindAsync([id], ct); if (key is null) return Results.NotFound(); key.IsActive = !req.IsSuspended; await db.SaveChangesAsync(ct); return Results.NoContent(); });
         admin.MapDelete("/user-keys/{id:guid}", async (Guid id, AppDbContext db, CancellationToken ct) => { var key = await db.UserApiKeys.FindAsync([id], ct); if (key is null) return Results.NotFound(); db.UserApiKeys.Remove(key); await db.SaveChangesAsync(ct); return Results.NoContent(); });

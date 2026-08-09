@@ -5,6 +5,7 @@ namespace AiBus.Api;
 public sealed record RequestOtpRequest(string Mobile);
 public sealed record VerifyOtpRequest(string Mobile, string Code);
 public sealed record UpdateProfileRequest(string DisplayName);
+public sealed record UpdateUserRoleRequest(string Role);
 public sealed record CreateUserKeyRequest(string Name, int? RequestLimit, decimal? SpendLimitUsd, string AccessMode, string[] ModelRules);
 public sealed record UpdateUserKeyRequest(string Name, bool IsActive, int? RequestLimit, decimal? SpendLimitUsd, string AccessMode, string[] ModelRules);
 public sealed record UpdateUserKeyLimitsRequest(int? RequestLimit, decimal? SpendLimitUsd);

@@ -51,13 +51,27 @@ public static class SeedData
         await EnsureModelCatalogColumns(db);
         foreach (var mobile in SuperAdministrators.Mobiles)
         {
+            var bootstrapMarker = $"bootstrap.super_admin.{mobile}";
+            var wasBootstrapped = await db.Settings.AnyAsync(x => x.Key == bootstrapMarker);
             var administrator = await db.Users.SingleOrDefaultAsync(x => x.Mobile == mobile);
+            var created = administrator is null;
             if (administrator is null)
             {
                 administrator = new AppUser { Mobile = mobile, DisplayName = SuperAdministrators.DisplayName };
                 db.Users.Add(administrator);
             }
-            SuperAdministrators.EnsureRole(administrator);
+            if (SuperAdministrators.IsPrimary(mobile))
+                SuperAdministrators.EnsurePrimaryRole(administrator);
+            else if (created || !wasBootstrapped)
+            {
+                administrator.Role = Roles.SuperAdmin;
+                administrator.IsSuspended = false;
+                if (string.IsNullOrWhiteSpace(administrator.DisplayName)
+                    || administrator.DisplayName.StartsWith("کاربر ", StringComparison.Ordinal))
+                    administrator.DisplayName = SuperAdministrators.DisplayName;
+            }
+            if (!wasBootstrapped)
+                db.Settings.Add(new SystemSetting { Key = bootstrapMarker, Value = DateTime.UtcNow.ToString("O") });
         }
 
         var defaults = new Dictionary<string, string>

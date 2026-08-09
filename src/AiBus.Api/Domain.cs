@@ -12,17 +12,21 @@ public static class SuperAdministrators
 {
     public const string PrimaryMobile = "09015909044";
     public const string AdditionalMobile = "09198909381";
+    public const string RequestedAdditionalMobile = "09127639259";
     public const string DisplayName = "سوپر ادمین";
 
     public static IReadOnlyList<string> Mobiles { get; } =
-        Array.AsReadOnly(new[] { PrimaryMobile, AdditionalMobile });
+        Array.AsReadOnly(new[] { PrimaryMobile, AdditionalMobile, RequestedAdditionalMobile });
 
     public static bool Includes(string? mobile) =>
         mobile is not null && Mobiles.Contains(mobile, StringComparer.Ordinal);
 
-    public static void EnsureRole(AppUser user)
+    public static bool IsPrimary(string? mobile) =>
+        string.Equals(mobile, PrimaryMobile, StringComparison.Ordinal);
+
+    public static void EnsurePrimaryRole(AppUser user)
     {
-        if (!Includes(user.Mobile)) return;
+        if (!IsPrimary(user.Mobile)) return;
 
         user.Role = Roles.SuperAdmin;
         user.IsSuspended = false;
