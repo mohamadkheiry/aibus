@@ -100,6 +100,8 @@ public sealed class AiModel
     [MaxLength(120)] public string ModelId { get; set; } = "";
     [MaxLength(160)] public string DisplayName { get; set; } = "";
     [MaxLength(40)] public string Modality { get; set; } = "text";
+    public string InputModalitiesJson { get; set; } = "[\"text\"]";
+    [MaxLength(40)] public string OutputModality { get; set; } = "text";
     [MaxLength(50)] public string ServiceType { get; set; } = "chat";
     [MaxLength(200)] public string EndpointPath { get; set; } = "/v1/chat/completions";
     [MaxLength(500)] public string UpstreamBaseUrl { get; set; } = "";
@@ -155,6 +157,8 @@ public sealed class UsageRecord
     public int DurationMs { get; set; }
     [MaxLength(20)] public string Status { get; set; } = "success";
     [MaxLength(60)] public string TraceId { get; set; } = "";
+    [MaxLength(200)] public string EndpointPath { get; set; } = "";
+    public int HttpStatus { get; set; }
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 }
 

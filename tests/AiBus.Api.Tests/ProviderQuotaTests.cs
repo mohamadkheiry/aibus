@@ -22,22 +22,26 @@ public sealed class ScriptedProviderHandler : HttpMessageHandler
         Task.FromResult(JsonResponse(HttpStatusCode.ServiceUnavailable, new { error = new { message = "No test response configured" } }));
 
     public ConcurrentQueue<string> CalledApiKeys { get; } = new();
+    public ConcurrentQueue<Uri> CalledUris { get; } = new();
 
     public void Reset(Func<HttpRequestMessage, HttpResponseMessage> responder)
     {
         while (CalledApiKeys.TryDequeue(out _)) { }
+        while (CalledUris.TryDequeue(out _)) { }
         _responder = (request, _) => Task.FromResult(responder(request));
     }
 
     public void ResetAsync(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> responder)
     {
         while (CalledApiKeys.TryDequeue(out _)) { }
+        while (CalledUris.TryDequeue(out _)) { }
         _responder = responder;
     }
 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken)
     {
         CalledApiKeys.Enqueue(request.Headers.Authorization?.Parameter ?? "");
+        if (request.RequestUri is not null) CalledUris.Enqueue(request.RequestUri);
         return _responder(request, cancellationToken);
     }
 
@@ -127,6 +131,45 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
     private readonly HttpClient _client = factory.CreateClient();
 
     [Fact]
+    public async Task Arka_model_test_uses_its_private_base_url_and_does_not_audit_response_body()
+    {
+        const string responseMarker = "TRANSIENT-UPSTREAM-TEST-BODY";
+        factory.ProviderHandler.Reset(_ => ScriptedProviderHandler.JsonResponse(HttpStatusCode.OK, new { result = responseMarker }));
+        Guid modelId;
+        string token;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var secrets = scope.ServiceProvider.GetRequiredService<SecretProtector>();
+            var provider = await db.Providers.SingleAsync(x => x.Slug == "arka");
+            db.ProviderCredentials.Add(new ProviderCredential { ProviderId = provider.Id, Label = "test", ProtectedApiKey = secrets.Protect("arka-upstream-key"), IsActive = true });
+            var model = new AiModel
+            {
+                ProviderId = provider.Id, ModelId = $"arka-route-{Guid.NewGuid():N}", DisplayName = "ARKA Route Test",
+                EndpointPath = "/v1/chat/completions", UpstreamBaseUrl = "https://private.arka.example/root/v1",
+                UpstreamPath = "/custom/chat", TestPayloadJson = "{\"model\":\"arka-route\",\"messages\":[]}",
+                InputModalitiesJson = "[\"text\"]", OutputModality = "text"
+            };
+            db.Models.Add(model);
+            await db.SaveChangesAsync();
+            modelId = model.Id;
+            var admin = await db.Users.SingleAsync(x => x.Mobile == SuperAdministrators.PrimaryMobile);
+            token = scope.ServiceProvider.GetRequiredService<TokenService>().Create(admin);
+        }
+
+        using var request = Authorized(HttpMethod.Post, $"/api/admin/models/{modelId}/test", token);
+        var response = await _client.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        Assert.Contains(responseMarker, await response.Content.ReadAsStringAsync());
+        Assert.Equal("https://private.arka.example/root/v1/custom/chat", factory.ProviderHandler.CalledUris.Single().ToString().TrimEnd('/'));
+
+        using var verificationScope = factory.Services.CreateScope();
+        var verificationDb = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var audit = await verificationDb.AuditLogs.AsNoTracking().SingleAsync(x => x.Action == "model.upstream.test" && x.EntityId == modelId.ToString());
+        Assert.DoesNotContain(responseMarker, audit.DetailsJson);
+    }
+
+    [Fact]
     public void Classifier_distinguishes_quota_from_temporary_rate_limit()
     {
         var quota = ProviderErrorMapper.Classify(HttpStatusCode.TooManyRequests,
@@ -159,7 +202,7 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
     }
 
     [Fact]
-    public async Task Quota_failure_is_sanitized_marks_key_and_never_charges_user()
+    public async Task Quota_failure_is_forwarded_marks_key_and_never_charges_user_or_persists_body()
     {
         factory.ProviderHandler.Reset(_ => ScriptedProviderHandler.JsonResponse(HttpStatusCode.TooManyRequests, new
         {
@@ -176,12 +219,10 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
         var response = await _client.SendAsync(request);
         var responseText = await response.Content.ReadAsStringAsync();
 
-        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        Assert.Contains(ProviderErrorMapper.QuotaExhaustedCode, responseText);
-        Assert.Contains("هزینه‌ای از کیف پول شما کسر نشد", responseText);
-        Assert.DoesNotContain(RawQuotaMarker, responseText);
-        Assert.DoesNotContain("platform.openai.com", responseText);
-        Assert.DoesNotContain("exceeded your current quota", responseText, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(HttpStatusCode.TooManyRequests, response.StatusCode);
+        Assert.Contains(RawQuotaMarker, responseText);
+        Assert.Contains("platform.openai.com/private", responseText);
+        Assert.Contains("exceeded your current quota", responseText, StringComparison.OrdinalIgnoreCase);
 
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -196,13 +237,14 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
         Assert.Equal(0, providerKey.RemainingBalanceUsd);
         Assert.Equal(ProviderErrorMapper.QuotaExhaustedCode, providerKey.LastErrorCode);
         Assert.NotNull(providerKey.LastErrorAtUtc);
-        Assert.Contains(RawQuotaMarker, providerKey.LastError);
+        Assert.Equal($"{ProviderErrorMapper.QuotaExhaustedCode} ({ProviderFailureKind.QuotaExhausted})", providerKey.LastError);
+        Assert.DoesNotContain(RawQuotaMarker, providerKey.LastError);
         Assert.Equal("failed", usage.Status);
         Assert.Equal(0, usage.CostUsd);
     }
 
     [Fact]
-    public async Task Sse_quota_event_without_optional_space_is_sanitized_and_not_charged()
+    public async Task Sse_quota_event_without_optional_space_is_forwarded_and_not_charged()
     {
         factory.ProviderHandler.Reset(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {
@@ -218,10 +260,9 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
         var responseText = await response.Content.ReadAsStringAsync();
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        Assert.Contains(ProviderErrorMapper.QuotaExhaustedCode, responseText);
         Assert.Contains("data: [DONE]", responseText);
-        Assert.DoesNotContain(RawQuotaMarker, responseText);
-        Assert.DoesNotContain("exceeded your current quota", responseText, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(RawQuotaMarker, responseText);
+        Assert.Contains("exceeded your current quota", responseText, StringComparison.OrdinalIgnoreCase);
 
         using var scope = factory.Services.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -511,6 +552,13 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
             messages = new[] { new { role = "user", content = "test" } },
             stream
         }), Encoding.UTF8, "application/json");
+        return request;
+    }
+
+    private static HttpRequestMessage Authorized(HttpMethod method, string path, string token)
+    {
+        var request = new HttpRequestMessage(method, path);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         return request;
     }
 

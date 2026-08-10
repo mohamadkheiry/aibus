@@ -102,7 +102,7 @@ public sealed class SmsIrService(HttpClient http, SettingsService settings, ILog
         var apiKey = await settings.Get("sms.api_key");
         if (string.IsNullOrWhiteSpace(apiKey))
         {
-            logger.LogWarning("SMS.ir key is not configured; OTP for {Mobile} is available only in development logs: {Code}", mobile, code);
+            logger.LogWarning("SMS.ir key is not configured for OTP delivery to {Mobile}", mobile);
             return false;
         }
         var templateId = int.TryParse(await settings.Get("sms.template_id", "176898"), out var id) ? id : 176898;
@@ -112,7 +112,7 @@ public sealed class SmsIrService(HttpClient http, SettingsService settings, ILog
         request.Content = JsonContent.Create(new { mobile, templateId, parameters = new[] { new { name = "CODE", value = code } } });
         var response = await http.SendAsync(request, ct);
         if (!response.IsSuccessStatusCode)
-            logger.LogError("SMS.ir failed: {Status} {Body}", response.StatusCode, await response.Content.ReadAsStringAsync(ct));
+            logger.LogError("SMS.ir delivery failed with status {Status} for {Mobile}", (int)response.StatusCode, mobile);
         return response.IsSuccessStatusCode;
     }
 }

@@ -46,6 +46,7 @@ export function Playground({model,close}:{model:Model;close:()=>void}){
   const payload=()=>{const parsed=JSON.parse(requestJson) as Record<string,unknown>;if(!parsed||Array.isArray(parsed)||typeof parsed!=='object')throw new Error('ورودی باید یک JSON Object معتبر باشد.');if(!parsed.model)throw new Error('فیلد model در ورودی JSON الزامی است.');return parsed}
   const prepare=()=>{if(!key)throw new Error('کلید API را وارد کنید.');sessionStorage.setItem('aibus_test_key',key);setBusy(true);setOutput('');setMeta(null);return performance.now()}
   const finishError=(error:unknown)=>{const safe=safeApiError(error);setOutput(JSON.stringify({error:safe},null,2));toast.error(safe.message)}
+  const showUpstreamError=(text:string,status:number,started:number)=>{let raw:unknown;try{raw=JSON.parse(text)}catch{raw={raw:text}};setOutput(JSON.stringify(raw,null,2));setMeta({status,latency:Math.round(performance.now()-started)});toast.error(safeApiErrorFromText(text,status).message)}
   const formatInput=()=>{try{setRequestJson(JSON.stringify(JSON.parse(requestJson),null,2));toast.success('JSON مرتب شد')}catch{toast.error('ساختار JSON معتبر نیست.')}}
   const updateSpeechText=(value:string)=>{try{const body=payload();body.input=value;setRequestJson(JSON.stringify(body,null,2))}catch{toast.error('ابتدا ساختار JSON را اصلاح کنید.')}}
   const setAudio=(blob:Blob,name='audio.webm')=>{if(audioUrl)URL.revokeObjectURL(audioUrl);const file=blob instanceof File?blob:new File([blob],name,{type:blob.type||'audio/webm'}),url=URL.createObjectURL(file);setAudioFile(file);setAudioUrl(url);const probe=new Audio(url);probe.onloadedmetadata=()=>Number.isFinite(probe.duration)&&setDuration(probe.duration)}
@@ -59,12 +60,12 @@ export function Playground({model,close}:{model:Model;close:()=>void}){
         if(!audioFile)throw new Error('یک فایل صوتی انتخاب یا با میکروفون ضبط کنید.')
         const form=new FormData();Object.entries(body).forEach(([name,value])=>{if(name!=='file'&&value!=null&&(typeof value!=='object'||Array.isArray(value)))form.append(name,typeof value==='string'?value:JSON.stringify(value))});form.append('file',audioFile,audioFile.name);form.append('aibus_duration_seconds',String(duration||0))
         const res=await fetch(endpoint,{method:'POST',headers:{Authorization:`Bearer ${key}`},body:form}),text=await res.text()
-        if(!res.ok){const safe=safeApiErrorFromText(text,res.status);setOutput(JSON.stringify({error:safe},null,2));setMeta({status:res.status,latency:Math.round(performance.now()-started)});toast.error(safe.message);return}
+        if(!res.ok){showUpstreamError(text,res.status,started);return}
         let data:unknown;try{data=JSON.parse(text)}catch{data={raw:text}}
         setOutput(JSON.stringify(data,null,2));setMeta({status:res.status,latency:Math.round(performance.now()-started)});toast.success('رونویسی صوت دریافت شد')
       }else{
         const res=await fetch(endpoint,{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify(body)}),contentType=res.headers.get('content-type')||''
-        if(!res.ok){const safe=safeApiErrorFromText(await res.text(),res.status);setOutput(JSON.stringify({error:safe},null,2));setMeta({status:res.status,latency:Math.round(performance.now()-started)});toast.error(safe.message);return}
+        if(!res.ok){showUpstreamError(await res.text(),res.status,started);return}
         if(mode==='tts'){
           let blob:Blob,json:unknown=null
           if(contentType.includes('json')){json=await res.json();const encoded=audioFromJson(json);if(!encoded){setOutput(JSON.stringify(json,null,2));throw new Error('پاسخ JSON دریافت شد اما داده صوتی در آن پیدا نشد.')}blob=base64Blob(encoded.data,encoded.mime)}else blob=await res.blob()

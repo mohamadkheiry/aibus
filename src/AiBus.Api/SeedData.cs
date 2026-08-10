@@ -49,6 +49,7 @@ public static class SeedData
         await EnsureUserApiKeyColumns(db);
         await EnsureProviderCredentialColumns(db);
         await EnsureModelCatalogColumns(db);
+        await EnsureUsageLogColumns(db);
         foreach (var mobile in SuperAdministrators.Mobiles)
         {
             var bootstrapMarker = $"bootstrap.super_admin.{mobile}";
@@ -211,7 +212,9 @@ public static class SeedData
             ["PricingDetailsJson"] = "TEXT NOT NULL DEFAULT '[]'",
             ["PricingNotes"] = "TEXT NOT NULL DEFAULT ''",
             ["UpstreamBaseUrl"] = "TEXT NOT NULL DEFAULT ''",
-            ["UpstreamPath"] = "TEXT NOT NULL DEFAULT ''"
+            ["UpstreamPath"] = "TEXT NOT NULL DEFAULT ''",
+            ["InputModalitiesJson"] = "TEXT NOT NULL DEFAULT '[\"text\"]'",
+            ["OutputModality"] = "TEXT NOT NULL DEFAULT 'text'"
         };
         var connection = db.Database.GetDbConnection();
         if (connection.State != ConnectionState.Open) await connection.OpenAsync();
@@ -229,6 +232,31 @@ public static class SeedData
             command.CommandText = $"ALTER TABLE \"Models\" ADD COLUMN \"{column.Key}\" {column.Value}";
             await command.ExecuteNonQueryAsync();
         }
+    }
+
+    private static async Task EnsureUsageLogColumns(AppDbContext db)
+    {
+        var additions = new Dictionary<string, string>
+        {
+            [nameof(UsageRecord.EndpointPath)] = "TEXT NOT NULL DEFAULT ''",
+            [nameof(UsageRecord.HttpStatus)] = "INTEGER NOT NULL DEFAULT 0"
+        };
+        var connection = db.Database.GetDbConnection();
+        if (connection.State != ConnectionState.Open) await connection.OpenAsync();
+        var existing = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        await using (var command = connection.CreateCommand())
+        {
+            command.CommandText = "PRAGMA table_info(\"UsageRecords\")";
+            await using var reader = await command.ExecuteReaderAsync();
+            while (await reader.ReadAsync()) existing.Add(reader.GetString(1));
+        }
+        foreach (var column in additions.Where(x => !existing.Contains(x.Key)))
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = $"ALTER TABLE \"UsageRecords\" ADD COLUMN \"{column.Key}\" {column.Value}";
+            await command.ExecuteNonQueryAsync();
+        }
+        await db.Database.ExecuteSqlRawAsync("CREATE INDEX IF NOT EXISTS \"IX_UsageRecords_Status_CreatedAtUtc\" ON \"UsageRecords\" (\"Status\", \"CreatedAtUtc\")");
     }
 
     private static async Task EnsureProviderCredentialColumns(AppDbContext db)
@@ -271,6 +299,7 @@ public static class SeedData
         var refreshExistingCatalog = catalogSnapshotSetting?.Value != catalogSnapshot;
         var extraProviders = new[]
         {
+            new ProviderSeed("ARKA", "arka", "/providers/arka.svg", "https://configure-in-admin.invalid/v1", "", "openai"),
             new ProviderSeed("ElevenLabs", "elevenlabs", "https://cdn.simpleicons.org/elevenlabs/111111", "https://api.elevenlabs.io/v1", "https://elevenlabs.io/pricing/api", "elevenlabs"),
             new ProviderSeed("Deepgram", "deepgram", "https://cdn.simpleicons.org/deepgram/13EF93", "https://api.deepgram.com/v1", "https://deepgram.com/pricing", "deepgram"),
             new ProviderSeed("AssemblyAI", "assemblyai", "https://cdn.simpleicons.org/assemblyai/6C47FF", "https://api.assemblyai.com/v2", "https://www.assemblyai.com/pricing", "assemblyai"),

@@ -138,7 +138,9 @@ public static class ProviderErrorMapper
 
     public static void Apply(ProviderCredential credential, ProviderFailure failure)
     {
-        credential.LastError = Truncate(failure.AdministrativeDetail);
+        // Persist classification metadata only. Raw upstream response bodies and exception
+        // messages are intentionally never written to the database.
+        credential.LastError = $"{failure.Code} ({failure.Kind})";
         credential.LastErrorCode = failure.Code;
         credential.LastErrorAtUtc = DateTime.UtcNow;
         credential.LastUsedAtUtc = DateTime.UtcNow;

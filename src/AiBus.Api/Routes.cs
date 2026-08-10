@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -404,11 +405,113 @@ public static class Routes
             var models = await db.Models.AsNoTracking().Include(x => x.Provider).OrderBy(x => x.Provider!.Name).ThenBy(x => x.DisplayName).ToListAsync(ct);
             return Results.Ok(models.Select(AdminModelView));
         });
-        admin.MapPost("/models", async (ModelRequest req, AppDbContext db, CancellationToken ct) => { var m = ToModel(req); db.Add(m); await db.SaveChangesAsync(ct); return Results.Ok(m); });
-        admin.MapPut("/models/{id:guid}", async (Guid id, ModelRequest req, AppDbContext db, CancellationToken ct) => { var m = await db.Models.FindAsync([id], ct); if (m is null) return Results.NotFound(); Apply(m, req); await db.SaveChangesAsync(ct); return Results.NoContent(); });
+        admin.MapPost("/models", async (ModelRequest req, AppDbContext db, CancellationToken ct) =>
+        {
+            var validation = await ValidateModelRequest(req, db, null, ct);
+            if (validation is not null) return Results.BadRequest(new { message = validation });
+            var m = ToModel(req); db.Add(m); await db.SaveChangesAsync(ct); return Results.Ok(new { m.Id });
+        });
+        admin.MapPut("/models/{id:guid}", async (Guid id, ModelRequest req, AppDbContext db, CancellationToken ct) =>
+        {
+            var m = await db.Models.FindAsync([id], ct); if (m is null) return Results.NotFound();
+            var validation = await ValidateModelRequest(req, db, id, ct);
+            if (validation is not null) return Results.BadRequest(new { message = validation });
+            Apply(m, req); await db.SaveChangesAsync(ct); return Results.NoContent();
+        });
+        admin.MapPost("/models/{id:guid}/test", async (Guid id, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, SecretProtector secrets, IHttpClientFactory clients, CancellationToken ct) =>
+        {
+            var model = await db.Models.Include(x => x.Provider).ThenInclude(x => x!.Credentials).SingleOrDefaultAsync(x => x.Id == id, ct);
+            if (model?.Provider is null) return Results.NotFound();
+            var credential = model.Provider.Credentials.Where(x => x.IsActive && x.ProtectedApiKey != "").OrderBy(x => x.LastUsedAtUtc).FirstOrDefault();
+            if (credential is null) return Results.BadRequest(new { message = "ابتدا برای برند انتخاب‌شده یک کلید upstream فعال ثبت کنید." });
+            JsonDocument payload;
+            try { payload = JsonDocument.Parse(string.IsNullOrWhiteSpace(model.TestPayloadJson) ? "{}" : model.TestPayloadJson); }
+            catch (JsonException) { return Results.BadRequest(new { message = "payload آزمایشی JSON معتبر نیست." }); }
+            using (payload)
+            using (var request = new HttpRequestMessage(HttpMethod.Post, ModelUpstreamUri(model)))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secrets.Unprotect(credential.ProtectedApiKey));
+                request.Content = new StringContent(payload.RootElement.GetRawText(), Encoding.UTF8, "application/json");
+                var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    using var response = await clients.CreateClient("providers").SendAsync(request, ct);
+                    var responseText = await response.Content.ReadAsStringAsync(ct);
+                    ProviderFailure? failure = null;
+                    if (response.IsSuccessStatusCode) ProviderErrorMapper.Clear(credential);
+                    else { failure = ProviderErrorMapper.Classify(response.StatusCode, responseText); ProviderErrorMapper.Apply(credential, failure); }
+                    db.AuditLogs.Add(new AuditLog { ActorUserId = actor.UserId(), Action = "model.upstream.test", EntityType = "model", EntityId = model.Id.ToString(), DetailsJson = JsonSerializer.Serialize(new { success = response.IsSuccessStatusCode, status = (int)response.StatusCode, latencyMs = stopwatch.ElapsedMilliseconds, model.ProviderId }) });
+                    await db.SaveChangesAsync(ct);
+                    return Results.Ok(new { success = response.IsSuccessStatusCode, status = (int)response.StatusCode, latencyMs = stopwatch.ElapsedMilliseconds, contentType = response.Content.Headers.ContentType?.ToString(), errorCode = failure?.Code, response = responseText[..Math.Min(4000, responseText.Length)] });
+                }
+                catch (Exception exception) when (!ct.IsCancellationRequested)
+                {
+                    var failure = ProviderErrorMapper.Classify(exception); ProviderErrorMapper.Apply(credential, failure);
+                    db.AuditLogs.Add(new AuditLog { ActorUserId = actor.UserId(), Action = "model.upstream.test", EntityType = "model", EntityId = model.Id.ToString(), DetailsJson = JsonSerializer.Serialize(new { success = false, status = 502, latencyMs = stopwatch.ElapsedMilliseconds, model.ProviderId, failure.Code }) });
+                    await db.SaveChangesAsync(CancellationToken.None);
+                    return Results.Ok(new { success = false, status = 502, latencyMs = stopwatch.ElapsedMilliseconds, errorCode = failure.Code, response = "" });
+                }
+            }
+        });
         admin.MapDelete("/models/{id:guid}", async (Guid id, AppDbContext db, CancellationToken ct) => { var m = await db.Models.FindAsync([id], ct); if (m is null) return Results.NotFound(); m.IsActive = false; await db.SaveChangesAsync(ct); return Results.NoContent(); });
 
         admin.MapGet("/users", async (AppDbContext db, [FromQuery] string? search, [FromQuery] string? sort, CancellationToken ct) => { var q = db.Users.AsNoTracking().Include(x => x.ApiKeys).AsQueryable(); if (!string.IsNullOrWhiteSpace(search)) q = q.Where(x => x.Mobile.Contains(search) || x.DisplayName.Contains(search)); q = sort switch { "wallet" => q.OrderByDescending(x => (double)x.WalletUsd), "requests" => q.OrderByDescending(x => x.ApiKeys.Sum(k => k.RequestCount)), _ => q.OrderByDescending(x => x.CreatedAtUtc) }; return Results.Ok(await q.Select(x => new { x.Id, x.Mobile, x.DisplayName, x.Role, isPrimarySuperAdmin = x.Mobile == SuperAdministrators.PrimaryMobile, x.IsSuspended, x.WalletUsd, x.CreatedAtUtc, x.LastSeenAtUtc, apiKeyCount = x.ApiKeys.Count, requests = x.ApiKeys.Sum(k => k.RequestCount), spentUsd = x.ApiKeys.Sum(k => (double)k.SpentUsd) }).ToListAsync(ct)); });
+        admin.MapGet("/users/report", async (AppDbContext db, [FromQuery] string? search, [FromQuery] string? sort, CancellationToken ct) =>
+        {
+            var q = db.Users.AsNoTracking().AsQueryable();
+            if (!string.IsNullOrWhiteSpace(search)) { var term = search.Trim(); q = q.Where(x => x.Mobile.Contains(term) || x.DisplayName.Contains(term)); }
+            q = sort switch { "wallet" => q.OrderByDescending(x => (double)x.WalletUsd), "requests" => q.OrderByDescending(x => x.ApiKeys.Sum(k => k.RequestCount)), _ => q.OrderByDescending(x => x.CreatedAtUtc) };
+            var rows = await q.Select(x => new
+            {
+                x.Mobile, x.DisplayName, x.Role, x.IsSuspended, x.WalletUsd, x.CreatedAtUtc, x.LastSeenAtUtc,
+                ApiKeyCount = x.ApiKeys.Count, Requests = x.ApiKeys.Sum(k => k.RequestCount), SpentUsd = x.ApiKeys.Sum(k => (double)k.SpentUsd)
+            }).ToListAsync(ct);
+            var csv = new StringBuilder("\uFEFFMobile,Display Name,Role,Status,Wallet USD,API Keys,Requests,Spent USD,Created UTC,Last Seen UTC\r\n");
+            foreach (var x in rows)
+                csv.AppendJoin(',', Csv(x.Mobile), Csv(x.DisplayName), Csv(x.Role), x.IsSuspended ? "Suspended" : "Active",
+                    x.WalletUsd.ToString(CultureInfo.InvariantCulture), x.ApiKeyCount, x.Requests,
+                    x.SpentUsd.ToString(CultureInfo.InvariantCulture), x.CreatedAtUtc.ToString("O"), x.LastSeenAtUtc?.ToString("O") ?? "").Append("\r\n");
+            return Results.File(Encoding.UTF8.GetBytes(csv.ToString()), "text/csv; charset=utf-8", $"aibus-users-{DateTime.UtcNow:yyyyMMdd-HHmm}.csv");
+        });
+        admin.MapGet("/logs", async (AppDbContext db, [FromQuery] int page, [FromQuery] int pageSize, [FromQuery] string? search, [FromQuery] string? status, CancellationToken ct) =>
+        {
+            page = Math.Max(1, page); pageSize = Math.Clamp(pageSize, 10, 100);
+            var query = from usage in db.UsageRecords.AsNoTracking()
+                        join user in db.Users.AsNoTracking() on usage.UserId equals user.Id
+                        join key in db.UserApiKeys.AsNoTracking() on usage.UserApiKeyId equals key.Id
+                        select new { usage, user, key };
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var term = search.Trim();
+                query = query.Where(x => x.user.Mobile.Contains(term) || x.user.DisplayName.Contains(term) || x.key.Name.Contains(term)
+                    || x.key.KeyPrefix.Contains(term) || x.usage.ModelName.Contains(term) || x.usage.ProviderName.Contains(term) || x.usage.TraceId.Contains(term));
+            }
+            if (status is "success" or "failed") query = query.Where(x => x.usage.Status == status);
+            var total = await query.CountAsync(ct);
+            var items = await query.OrderByDescending(x => x.usage.CreatedAtUtc).Skip((page - 1) * pageSize).Take(pageSize)
+                .Select(x => new
+                {
+                    x.usage.Id, x.usage.CreatedAtUtc, x.usage.Status,
+                    httpStatus = x.usage.HttpStatus == 0 ? (x.usage.Status == "success" ? 200 : 502) : x.usage.HttpStatus,
+                    x.usage.DurationMs, x.usage.TraceId, x.usage.EndpointPath, x.usage.ModelName, x.usage.ProviderName,
+                    x.usage.InputTokens, x.usage.OutputTokens, x.usage.CostUsd,
+                    consumer = new { x.user.Id, x.user.DisplayName, x.user.Mobile, apiKeyId = x.key.Id, apiKeyName = x.key.Name, x.key.KeyPrefix }
+                }).ToListAsync(ct);
+            var since = DateTime.UtcNow.AddHours(-24);
+            var recent = db.UsageRecords.AsNoTracking().Where(x => x.CreatedAtUtc >= since);
+            return Results.Ok(new
+            {
+                total, items,
+                summary = new
+                {
+                    requests24h = await recent.CountAsync(ct),
+                    failures24h = await recent.CountAsync(x => x.Status == "failed", ct),
+                    averageLatencyMs24h = await recent.AnyAsync(ct) ? await recent.AverageAsync(x => (double)x.DurationMs, ct) : 0,
+                    activeConsumers24h = await recent.Select(x => x.UserApiKeyId).Distinct().CountAsync(ct)
+                },
+                privacy = new { bodyStored = false, fields = new[] { "time", "status", "latency", "consumer", "model", "token usage", "cost", "trace id" } }
+            });
+        });
         admin.MapGet("/users/{id:guid}/keys", async (Guid id, AppDbContext db, CancellationToken ct) => Results.Ok(await db.UserApiKeys.AsNoTracking().Where(x => x.UserId == id).OrderByDescending(x => x.CreatedAtUtc).Select(x => new { x.Id, x.Name, x.KeyPrefix, x.IsActive, x.RequestLimit, x.SpendLimitUsd, x.RequestCount, x.SpentUsd, x.AccessMode, x.ModelRulesJson, x.CreatedAtUtc, x.LastUsedAtUtc }).ToListAsync(ct)));
         admin.MapPut("/users/{id:guid}/role", async (Guid id, UpdateUserRoleRequest req, System.Security.Claims.ClaimsPrincipal actor, AppDbContext db, CancellationToken ct) =>
         {
@@ -594,8 +697,39 @@ public static class Routes
     }
     private static string ValidAccessMode(string value) => value is "allow" or "deny" ? value : "all";
     private static string? NormalizeMobile(string value) { var digits = new string(value.Where(char.IsDigit).ToArray()); if (digits.StartsWith("98") && digits.Length == 12) digits = "0" + digits[2..]; if (digits.Length == 10 && digits.StartsWith('9')) digits = "0" + digits; return digits.Length == 11 && digits.StartsWith("09") ? digits : null; }
+    private static readonly HashSet<string> SupportedModalities = ["text", "image", "audio", "video"];
+    private static readonly HashSet<string> SupportedGatewayEndpoints = ["/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/moderations", "/v1/images/generations", "/v1/videos", "/v1/audio/speech", "/v1/audio/transcriptions", "/v1/realtime"];
+    private static async Task<string?> ValidateModelRequest(ModelRequest r, AppDbContext db, Guid? currentId, CancellationToken ct)
+    {
+        if (string.IsNullOrWhiteSpace(r.ModelId) || string.IsNullOrWhiteSpace(r.DisplayName)) return "نام نمایشی و Model ID الزامی است.";
+        if (await db.Models.AnyAsync(x => x.ModelId == r.ModelId.Trim() && x.Id != currentId, ct)) return "این Model ID قبلاً ثبت شده است.";
+        var provider = await db.Providers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == r.ProviderId, ct);
+        if (provider is null) return "ارائه‌دهنده انتخاب‌شده وجود ندارد.";
+        var endpoint = NormalizePath(r.EndpointPath, "/v1/chat/completions");
+        if (!SupportedGatewayEndpoints.Contains(endpoint)) return "Endpoint عمومی انتخاب‌شده توسط Gateway پشتیبانی نمی‌شود.";
+        var inputs = (r.InputModalities ?? []).Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim().ToLowerInvariant()).Distinct().ToArray();
+        if (inputs.Length == 0 || inputs.Any(x => !SupportedModalities.Contains(x))) return "حداقل یک نوع ورودی معتبر انتخاب کنید.";
+        if (!SupportedModalities.Contains((r.OutputModality ?? "").Trim().ToLowerInvariant())) return "نوع خروجی معتبر نیست.";
+        if (r.InputPricePerMillionUsd < 0 || r.OutputPricePerMillionUsd < 0 || r.CachedInputPricePerMillionUsd < 0) return "تعرفه‌ها نمی‌توانند منفی باشند.";
+        if (!string.IsNullOrWhiteSpace(r.UpstreamBaseUrl) && (!Uri.TryCreate(r.UpstreamBaseUrl, UriKind.Absolute, out var upstream) || upstream.Scheme is not ("http" or "https"))) return "Base URL سرویس مقصد معتبر نیست.";
+        if (provider.Slug == "arka" && string.IsNullOrWhiteSpace(r.UpstreamBaseUrl)) return "برای سرویس ARKA واردکردن Base URL اختصاصی الزامی است.";
+        try { JsonDocument.Parse(string.IsNullOrWhiteSpace(r.TestPayloadJson) ? "{}" : r.TestPayloadJson).Dispose(); }
+        catch (JsonException) { return "ورودی تستی JSON معتبر نیست."; }
+        return null;
+    }
+    private static string NormalizePath(string? value, string fallback) { var path = Clean(value, 500); if (path.Length == 0) path = fallback; return path.StartsWith('/') ? path.TrimEnd('/') : "/" + path.TrimEnd('/'); }
+    private static Uri ModelUpstreamUri(AiModel model)
+    {
+        var baseUri = new Uri(string.IsNullOrWhiteSpace(model.UpstreamBaseUrl) ? model.Provider!.BaseUrl : model.UpstreamBaseUrl);
+        var upstreamPath = string.IsNullOrWhiteSpace(model.UpstreamPath) ? model.EndpointPath : model.UpstreamPath;
+        var path = upstreamPath.StartsWith('/') ? upstreamPath : "/" + upstreamPath;
+        var basePath = baseUri.AbsolutePath.TrimEnd('/');
+        if (basePath.Length > 0 && !path.Equals(basePath, StringComparison.OrdinalIgnoreCase) && !path.StartsWith(basePath + "/", StringComparison.OrdinalIgnoreCase)) path = basePath + "/" + path.TrimStart('/');
+        return new UriBuilder(baseUri) { Path = path, Query = "" }.Uri;
+    }
     private static AiModel ToModel(ModelRequest r) { var m = new AiModel(); Apply(m, r); return m; }
-    private static void Apply(AiModel m, ModelRequest r) { m.ProviderId = r.ProviderId; m.ModelId = r.ModelId; m.DisplayName = r.DisplayName; m.Modality = r.Modality; m.InputPricePerMillionUsd = r.InputPricePerMillionUsd; m.OutputPricePerMillionUsd = r.OutputPricePerMillionUsd; m.CachedInputPricePerMillionUsd = r.CachedInputPricePerMillionUsd; m.ContextWindow = r.ContextWindow; m.SupportsStreaming = r.SupportsStreaming; m.SupportsWebSocket = r.SupportsWebSocket; m.IsActive = r.IsActive; m.PricingSourceUrl = r.PricingSourceUrl; m.TestPayloadJson = r.TestPayloadJson; m.ServiceType = Clean(r.ServiceType, 50) is { Length: > 0 } serviceType ? serviceType : "chat"; m.EndpointPath = Clean(r.EndpointPath, 200) is { Length: > 0 } endpoint ? endpoint : "/v1/chat/completions"; m.Region = Clean(r.Region, 80) is { Length: > 0 } region ? region : "global"; m.IsPreview = r.IsPreview; m.PricingDetailsJson = JsonSerializer.Serialize(r.PricingComponents ?? []); m.PricingNotes = Clean(r.PricingNotes, 1000); m.PriceSyncedAtUtc = DateTime.UtcNow; }
+    private static void Apply(AiModel m, ModelRequest r) { var inputs = (r.InputModalities ?? ["text"]).Where(SupportedModalities.Contains).Distinct().ToArray(); if (inputs.Length == 0) inputs = ["text"]; var output = SupportedModalities.Contains(r.OutputModality ?? "") ? r.OutputModality! : "text"; m.ProviderId = r.ProviderId; m.ModelId = Clean(r.ModelId, 120); m.DisplayName = Clean(r.DisplayName, 160); m.Modality = Clean(r.Modality, 40) is { Length: > 0 } modality ? modality : string.Join('-', inputs.Append(output).Distinct()); m.InputModalitiesJson = JsonSerializer.Serialize(inputs); m.OutputModality = output; m.InputPricePerMillionUsd = r.InputPricePerMillionUsd; m.OutputPricePerMillionUsd = r.OutputPricePerMillionUsd; m.CachedInputPricePerMillionUsd = r.CachedInputPricePerMillionUsd; m.ContextWindow = Math.Max(0, r.ContextWindow); m.SupportsStreaming = r.SupportsStreaming; m.SupportsWebSocket = r.SupportsWebSocket; m.IsActive = r.IsActive; m.PricingSourceUrl = Clean(r.PricingSourceUrl, 500); m.TestPayloadJson = string.IsNullOrWhiteSpace(r.TestPayloadJson) ? "{}" : r.TestPayloadJson; m.ServiceType = Clean(r.ServiceType, 50) is { Length: > 0 } serviceType ? serviceType : "chat"; m.EndpointPath = NormalizePath(r.EndpointPath, "/v1/chat/completions"); m.UpstreamBaseUrl = Clean(r.UpstreamBaseUrl, 500).TrimEnd('/'); m.UpstreamPath = NormalizePath(r.UpstreamPath, m.EndpointPath); m.Region = Clean(r.Region, 80) is { Length: > 0 } region ? region : "global"; m.IsPreview = r.IsPreview; m.PricingDetailsJson = JsonSerializer.Serialize(r.PricingComponents ?? []); m.PricingNotes = Clean(r.PricingNotes, 1000); m.PriceSyncedAtUtc = DateTime.UtcNow; }
+    private static string[] InputModalities(AiModel m) { try { return JsonSerializer.Deserialize<string[]>(m.InputModalitiesJson) ?? ["text"]; } catch { return ["text"]; } }
     private static PricingComponentRequest[] PricingComponents(AiModel m)
     {
         try
@@ -610,6 +744,7 @@ public static class Routes
         if (m.CachedInputPricePerMillionUsd is not null) prices.Add(new("ورودی Cache", "million_text_tokens", m.CachedInputPricePerMillionUsd, null));
         return prices.ToArray();
     }
-    private static object ModelView(AiModel x) => new { x.Id, x.ProviderId, x.ModelId, x.DisplayName, x.Modality, x.ServiceType, x.EndpointPath, x.UpstreamBaseUrl, x.UpstreamPath, x.Region, x.IsPreview, pricingComponents = PricingComponents(x), x.PricingNotes, x.InputPricePerMillionUsd, x.OutputPricePerMillionUsd, x.CachedInputPricePerMillionUsd, x.ContextWindow, x.SupportsStreaming, x.SupportsWebSocket, x.PriceSyncedAtUtc, x.PricingSourceUrl, x.TestPayloadJson, provider = new { x.ProviderId, x.Provider!.Name, x.Provider.Slug, x.Provider.LogoUrl } };
-    private static object AdminModelView(AiModel x) => new { x.Id, x.ProviderId, providerName = x.Provider!.Name, x.ModelId, x.DisplayName, x.Modality, x.ServiceType, x.EndpointPath, x.UpstreamBaseUrl, x.UpstreamPath, x.Region, x.IsPreview, pricingComponents = PricingComponents(x), x.PricingNotes, x.InputPricePerMillionUsd, x.OutputPricePerMillionUsd, x.CachedInputPricePerMillionUsd, x.ContextWindow, x.SupportsStreaming, x.SupportsWebSocket, x.IsActive, x.PriceSyncedAtUtc, x.PricingSourceUrl, x.TestPayloadJson };
+    private static object ModelView(AiModel x) => new { x.Id, x.ProviderId, x.ModelId, x.DisplayName, x.Modality, inputModalities = InputModalities(x), x.OutputModality, x.ServiceType, x.EndpointPath, x.UpstreamBaseUrl, x.UpstreamPath, x.Region, x.IsPreview, pricingComponents = PricingComponents(x), x.PricingNotes, x.InputPricePerMillionUsd, x.OutputPricePerMillionUsd, x.CachedInputPricePerMillionUsd, x.ContextWindow, x.SupportsStreaming, x.SupportsWebSocket, x.PriceSyncedAtUtc, x.PricingSourceUrl, x.TestPayloadJson, provider = new { x.ProviderId, x.Provider!.Name, x.Provider.Slug, x.Provider.LogoUrl } };
+    private static object AdminModelView(AiModel x) => new { x.Id, x.ProviderId, providerName = x.Provider!.Name, providerSlug = x.Provider.Slug, x.ModelId, x.DisplayName, x.Modality, inputModalities = InputModalities(x), x.OutputModality, x.ServiceType, x.EndpointPath, x.UpstreamBaseUrl, x.UpstreamPath, x.Region, x.IsPreview, pricingComponents = PricingComponents(x), x.PricingNotes, x.InputPricePerMillionUsd, x.OutputPricePerMillionUsd, x.CachedInputPricePerMillionUsd, x.ContextWindow, x.SupportsStreaming, x.SupportsWebSocket, x.IsActive, x.PriceSyncedAtUtc, x.PricingSourceUrl, x.TestPayloadJson };
+    private static string Csv(string? value) => $"\"{(value ?? "").Replace("\"", "\"\"")}\"";
 }

@@ -79,7 +79,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             if (!ProviderErrorMapper.TryClassifyInBand(text, out var failure) || failure is null) return text;
             realtimeFailure = failure;
             ProviderErrorMapper.Apply(credential, failure);
-            return ProviderErrorMapper.PublicRealtimeErrorJson(failure, model.Provider.Name);
+            return text;
         }, ct);
         var completed = await Task.WhenAny(downToUp, upToDown);
         try
@@ -162,9 +162,9 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                         var failure = ProviderErrorMapper.Classify(upstream.StatusCode, error);
                         failures.Add(failure);
                         ProviderErrorMapper.Apply(credential, failure);
-                        if (failure.ShouldFailover) continue;
-                        await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct);
-                        await WriteProviderError(context, failure, model.Provider.Name);
+                        if (failure.ShouldFailover && credential != credentials[^1]) continue;
+                        await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct, (int)upstream.StatusCode);
+                        await WriteUpstreamError(context, upstream.StatusCode, error, upstream.Content.Headers.ContentType?.ToString());
                         return;
                     }
                     byte[]? bufferedBody = null;
@@ -176,7 +176,12 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                         {
                             failures.Add(applicationFailure);
                             ProviderErrorMapper.Apply(credential, applicationFailure);
-                            continue;
+                            if (credential != credentials[^1]) continue;
+                            await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct, 200);
+                            context.Response.StatusCode = 200;
+                            context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json; charset=utf-8";
+                            await context.Response.Body.WriteAsync(bufferedBody, ct);
+                            return;
                         }
                     }
                     context.Response.StatusCode = 200;
@@ -186,6 +191,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                     else await context.Response.Body.WriteAsync(bufferedBody, ct);
                     var input = body.RootElement.TryGetProperty("input", out var inputProperty) ? inputProperty.GetString() ?? "" : body.RootElement.TryGetProperty("text", out var textProperty) ? textProperty.GetString() ?? "" : "";
                     var cost = EstimateMediaCost(model, input.Length, 0);
+                    if (cost == 0) cost = EstimateRequestCost(model);
                     await Record(user, userKey, model, credential, input.Length, 0, cost, started.ElapsedMilliseconds, "success", context.TraceIdentifier, ct);
                     return;
                 }
@@ -241,9 +247,9 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                     var failure = ProviderErrorMapper.Classify(upstream.StatusCode, error);
                     failures.Add(failure);
                     ProviderErrorMapper.Apply(credential, failure);
-                    if (failure.ShouldFailover) continue;
-                    await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct);
-                    await WriteProviderError(context, failure, model.Provider.Name);
+                    if (failure.ShouldFailover && credential != credentials[^1]) continue;
+                    await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct, (int)upstream.StatusCode);
+                    await WriteUpstreamError(context, upstream.StatusCode, responseBody, upstream.Content.Headers.ContentType?.ToString());
                     return;
                 }
                 var responseText = Encoding.UTF8.GetString(responseBody);
@@ -251,11 +257,17 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                 {
                     failures.Add(applicationFailure);
                     ProviderErrorMapper.Apply(credential, applicationFailure);
-                    continue;
+                    if (credential != credentials[^1]) continue;
+                    await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct, 200);
+                    context.Response.StatusCode = 200;
+                    context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json; charset=utf-8";
+                    await context.Response.Body.WriteAsync(responseBody, ct);
+                    return;
                 }
                 context.Response.StatusCode = 200; context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json"; await context.Response.Body.WriteAsync(responseBody, ct);
                 long inputTokens = 0, outputTokens = 0; ParseUsage(responseText, ref inputTokens, ref outputTokens);
                 var cost = inputTokens + outputTokens > 0 ? EstimateTokenCost(model, inputTokens, outputTokens) : EstimateMediaCost(model, 0, durationSeconds);
+                if (cost == 0) cost = EstimateRequestCost(model);
                 await Record(user, userKey, model, credential, inputTokens > 0 ? inputTokens : (long)Math.Ceiling(durationSeconds), outputTokens, cost, started.ElapsedMilliseconds, "success", context.TraceIdentifier, ct);
                 return;
             }
@@ -308,7 +320,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                 lastAttempt = credential;
                 try
                 {
-                    upstream = await Send(model.Provider, credential, body.RootElement, stream, ct);
+                    upstream = await Send(model, credential, body.RootElement, stream, ct);
                     if (upstream.IsSuccessStatusCode)
                     {
                         if (!stream)
@@ -318,8 +330,17 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                             {
                                 failures.Add(applicationFailure);
                                 ProviderErrorMapper.Apply(credential, applicationFailure);
-                                upstream.Dispose(); upstream = null; bufferedResponse = null;
-                                continue;
+                                if (credential != credentials[^1])
+                                {
+                                    upstream.Dispose(); upstream = null; bufferedResponse = null;
+                                    continue;
+                                }
+                                await Record(user, userKey, model, credential, 0, 0, 0, stopwatch.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct, 200);
+                                context.Response.StatusCode = 200;
+                                context.Response.ContentType = upstream.Content.Headers.ContentType?.ToString() ?? "application/json; charset=utf-8";
+                                await context.Response.WriteAsync(bufferedResponse, ct);
+                                upstream.Dispose();
+                                return;
                             }
                         }
                         selected = credential;
@@ -329,7 +350,8 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                     var failure = ProviderErrorMapper.Classify(upstream.StatusCode, errorBody);
                     failures.Add(failure);
                     ProviderErrorMapper.Apply(credential, failure);
-                    if (!failure.ShouldFailover) { selected = credential; break; }
+                    bufferedResponse = errorBody;
+                    if (!failure.ShouldFailover || credential == credentials[^1]) { selected = credential; break; }
                     upstream.Dispose(); upstream = null;
                 }
                 catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -353,9 +375,9 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             {
                 if (!upstream.IsSuccessStatusCode)
                 {
-                    var failure = failures.LastOrDefault() ?? ProviderErrorMapper.Classify(upstream.StatusCode, await upstream.Content.ReadAsStringAsync(ct));
-                    await Record(user, userKey, model, selected, 0, 0, 0, stopwatch.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct);
-                    await WriteProviderError(context, failure, model.Provider.Name);
+                    var errorBody = bufferedResponse ?? await upstream.Content.ReadAsStringAsync(ct);
+                    await Record(user, userKey, model, selected, 0, 0, 0, stopwatch.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct, (int)upstream.StatusCode);
+                    await WriteUpstreamError(context, upstream.StatusCode, errorBody, upstream.Content.Headers.ContentType?.ToString());
                     return;
                 }
 
@@ -377,7 +399,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                         {
                             streamFailure = failure;
                             ProviderErrorMapper.Apply(selected, failure);
-                            await context.Response.WriteAsync($"data: {ProviderErrorMapper.PublicErrorJson(failure, model.Provider.Name)}\n\ndata: [DONE]\n\n", ct);
+                            await context.Response.WriteAsync(line + "\n\ndata: [DONE]\n\n", ct);
                             await context.Response.Body.FlushAsync(ct);
                             break;
                         }
@@ -401,6 +423,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                     return;
                 }
                 var cost = inputTokens / 1_000_000m * model.InputPricePerMillionUsd + outputTokens / 1_000_000m * model.OutputPricePerMillionUsd;
+                if (cost == 0) cost = EstimateRequestCost(model);
                 await Record(user, userKey, model, selected, inputTokens, outputTokens, cost, stopwatch.ElapsedMilliseconds, "success", context.TraceIdentifier, ct);
             }
         }
@@ -444,9 +467,9 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                         var failure = ProviderErrorMapper.Classify(upstream.StatusCode, error);
                         failures.Add(failure);
                         ProviderErrorMapper.Apply(credential, failure);
-                        if (failure.ShouldFailover) continue;
-                        await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct);
-                        await WriteProviderError(context, failure, model.Provider.Name);
+                        if (failure.ShouldFailover && credential != credentials[^1]) continue;
+                        await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, ct, (int)upstream.StatusCode);
+                        await WriteUpstreamError(context, upstream.StatusCode, error, upstream.Content.Headers.ContentType?.ToString());
                         return;
                     }
 
@@ -468,7 +491,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                             {
                                 streamFailure = failure;
                                 ProviderErrorMapper.Apply(credential, failure);
-                                await context.Response.WriteAsync($"data: {ProviderErrorMapper.PublicErrorJson(failure, model.Provider.Name)}\n\ndata: [DONE]\n\n", ct);
+                                await context.Response.WriteAsync(line + "\n\ndata: [DONE]\n\n", ct);
                                 await context.Response.Body.FlushAsync(ct);
                                 break;
                             }
@@ -484,7 +507,10 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                         {
                             failures.Add(applicationFailure);
                             ProviderErrorMapper.Apply(credential, applicationFailure);
-                            continue;
+                            if (credential != credentials[^1]) continue;
+                            await Record(user, userKey, model, credential, 0, 0, 0, started.ElapsedMilliseconds, "failed", context.TraceIdentifier, CancellationToken.None, 200);
+                            await context.Response.WriteAsync(responseText, ct);
+                            return;
                         }
                         ParseUsage(responseText, ref inputTokens, ref outputTokens);
                         await context.Response.WriteAsync(responseText, ct);
@@ -497,6 +523,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
                     var cost = EstimateTokenCost(model, inputTokens, outputTokens);
                     if (cost == 0 && model.ServiceType == "video_generation" && TryGetDecimal(body.RootElement, "seconds", out var seconds))
                         cost = EstimateMediaCost(model, 0, seconds);
+                    if (cost == 0) cost = EstimateRequestCost(model);
                     await Record(user, userKey, model, credential, inputTokens, outputTokens, cost, started.ElapsedMilliseconds, "success", context.TraceIdentifier, CancellationToken.None);
                     return;
                 }
@@ -675,6 +702,16 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
     private static decimal EstimateTokenCost(AiModel model, long inputTokens, long outputTokens) =>
         inputTokens / 1_000_000m * model.InputPricePerMillionUsd + outputTokens / 1_000_000m * model.OutputPricePerMillionUsd;
 
+    private static decimal EstimateRequestCost(AiModel model)
+    {
+        try
+        {
+            var prices = JsonSerializer.Deserialize<List<PriceComponent>>(model.PricingDetailsJson) ?? [];
+            return prices.FirstOrDefault(x => x.PriceUsd.HasValue && x.Unit is "request" or "message" or "image" or "video" or "voice")?.PriceUsd ?? 0;
+        }
+        catch { return 0; }
+    }
+
     private static decimal EstimateRealtimeCost(AiModel model, long inputTokens, long outputTokens, long inputAudioTokens, long outputAudioTokens)
     {
         try
@@ -690,10 +727,13 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
 
     private sealed record PriceComponent(string Label, string Unit, decimal? PriceUsd, string? Note);
 
-    private async Task<HttpResponseMessage> Send(AiProvider provider, ProviderCredential credential, JsonElement body, bool stream, CancellationToken ct)
+    private async Task<HttpResponseMessage> Send(AiModel model, ProviderCredential credential, JsonElement body, bool stream, CancellationToken ct)
     {
+        var provider = model.Provider!;
         var client = clients.CreateClient("providers");
-        var url = provider.BaseUrl.TrimEnd('/') + (provider.Protocol == "anthropic" ? "/messages" : "/chat/completions");
+        var url = provider.Protocol == "anthropic"
+            ? provider.BaseUrl.TrimEnd('/') + "/messages"
+            : BuildUpstreamUri(provider, model, false).ToString();
         var request = new HttpRequestMessage(HttpMethod.Post, url);
         var apiKey = secrets.Unprotect(credential.ProtectedApiKey);
         if (provider.Protocol == "anthropic")
@@ -717,9 +757,9 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         return await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
     }
 
-    private async Task Record(AppUser user, UserApiKey key, AiModel model, ProviderCredential credential, long input, long output, decimal cost, long durationMs, string status, string traceId, CancellationToken ct)
+    private async Task Record(AppUser user, UserApiKey key, AiModel model, ProviderCredential credential, long input, long output, decimal cost, long durationMs, string status, string traceId, CancellationToken ct, int? httpStatus = null)
     {
-        var usage = new UsageRecord { UserId = user.Id, UserApiKeyId = key.Id, ModelId = model.Id, ProviderCredentialId = credential.Id, ModelName = model.ModelId, ProviderName = model.Provider!.Name, InputTokens = input, OutputTokens = output, CostUsd = cost, DurationMs = (int)Math.Min(int.MaxValue, durationMs), Status = status, TraceId = traceId };
+        var usage = new UsageRecord { UserId = user.Id, UserApiKeyId = key.Id, ModelId = model.Id, ProviderCredentialId = credential.Id, ModelName = model.ModelId, ProviderName = model.Provider!.Name, InputTokens = input, OutputTokens = output, CostUsd = cost, DurationMs = (int)Math.Min(int.MaxValue, durationMs), Status = status, TraceId = traceId, EndpointPath = model.EndpointPath, HttpStatus = httpStatus ?? (status == "success" ? 200 : 502) };
         if (status == "success")
         {
             var completedAtUtc = DateTime.UtcNow;
@@ -866,5 +906,19 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         context.Response.StatusCode = failure.PublicStatus;
         context.Response.ContentType = "application/json; charset=utf-8";
         await context.Response.WriteAsJsonAsync(ProviderErrorMapper.PublicError(failure, providerName));
+    }
+
+    private static async Task WriteUpstreamError(HttpContext context, HttpStatusCode status, string body, string? contentType)
+    {
+        context.Response.StatusCode = (int)status;
+        context.Response.ContentType = string.IsNullOrWhiteSpace(contentType) ? "application/json; charset=utf-8" : contentType;
+        await context.Response.WriteAsync(body);
+    }
+
+    private static async Task WriteUpstreamError(HttpContext context, HttpStatusCode status, byte[] body, string? contentType)
+    {
+        context.Response.StatusCode = (int)status;
+        context.Response.ContentType = string.IsNullOrWhiteSpace(contentType) ? "application/json; charset=utf-8" : contentType;
+        await context.Response.Body.WriteAsync(body);
     }
 }

@@ -26,6 +26,7 @@ public sealed class AppDbContext(DbContextOptions<AppDbContext> options) : DbCon
         b.Entity<UserApiKey>().HasIndex(x => x.KeyHash).IsUnique();
         b.Entity<WalletTransaction>().HasIndex(x => x.Authority);
         b.Entity<UsageRecord>().HasIndex(x => new { x.UserId, x.CreatedAtUtc });
+        b.Entity<UsageRecord>().HasIndex(x => new { x.Status, x.CreatedAtUtc });
         b.Entity<VisitEvent>().HasIndex(x => x.CreatedAtUtc);
         b.Entity<SupportTicket>().HasIndex(x => x.ReferenceCode).IsUnique();
         b.Entity<SupportTicket>().HasIndex(x => new { x.UserId, x.UpdatedAtUtc });
