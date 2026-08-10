@@ -158,6 +158,64 @@ public sealed class ArkaServiceAndLogsTests(TestAppFactory factory) : IClassFixt
         }
     }
 
+    [Fact]
+    public async Task User_request_logs_are_scoped_to_the_authenticated_user_and_never_expose_bodies()
+    {
+        string token;
+        Guid ownUsageId;
+        Guid otherUsageId;
+        Guid ownKeyId;
+        const string forbiddenBody = "PRIVATE-USER-PROMPT-MUST-NOT-APPEAR";
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var model = await db.Models.AsNoTracking().FirstAsync();
+            var suffix = Guid.NewGuid().ToString("N")[..7];
+            var user = new AppUser { Mobile = $"091{suffix}", DisplayName = "مالک لاگ" };
+            var other = new AppUser { Mobile = $"092{suffix}", DisplayName = "کاربر دیگر" };
+            var ownKey = new UserApiKey { UserId = user.Id, Name = "کلید اختصاصی", KeyHash = Hashing.Sha256($"own-{suffix}"), KeyPrefix = "aibus_own" };
+            var otherKey = new UserApiKey { UserId = other.Id, Name = "کلید غیرمجاز", KeyHash = Hashing.Sha256($"other-{suffix}"), KeyPrefix = "aibus_other" };
+            var ownUsage = new UsageRecord
+            {
+                UserId = user.Id, UserApiKeyId = ownKey.Id, ModelId = model.Id, ModelName = model.ModelId,
+                ProviderName = "ARKA", InputTokens = 12, OutputTokens = 8, CostUsd = .002m,
+                DurationMs = 87, Status = "success", HttpStatus = 200, EndpointPath = "/v1/chat/completions",
+                TraceId = $"own-log-{suffix}"
+            };
+            var otherUsage = new UsageRecord
+            {
+                UserId = other.Id, UserApiKeyId = otherKey.Id, ModelId = model.Id, ModelName = model.ModelId,
+                ProviderName = "OpenAI", InputTokens = 999, OutputTokens = 999, CostUsd = 9m,
+                DurationMs = 900, Status = "failed", HttpStatus = 429, EndpointPath = "/v1/responses",
+                TraceId = $"foreign-log-{suffix}"
+            };
+            db.AddRange(user, other, ownKey, otherKey, ownUsage, otherUsage);
+            await db.SaveChangesAsync();
+            token = scope.ServiceProvider.GetRequiredService<TokenService>().Create(user);
+            ownUsageId = ownUsage.Id;
+            otherUsageId = otherUsage.Id;
+            ownKeyId = ownKey.Id;
+        }
+
+        using var request = Authorized(HttpMethod.Get, $"/api/logs?page=1&pageSize=10&apiKeyId={ownKeyId}&userId={Guid.NewGuid()}", token);
+        var response = await _client.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        var json = await response.Content.ReadAsStringAsync();
+        Assert.DoesNotContain(forbiddenBody, json);
+        Assert.DoesNotContain(otherUsageId.ToString(), json, StringComparison.OrdinalIgnoreCase);
+        using var document = JsonDocument.Parse(json);
+        var root = document.RootElement;
+        Assert.Equal(1, root.GetProperty("total").GetInt32());
+        Assert.False(root.GetProperty("privacy").GetProperty("bodyStored").GetBoolean());
+        var item = root.GetProperty("items")[0];
+        Assert.Equal(ownUsageId.ToString(), item.GetProperty("id").GetGuid().ToString());
+        Assert.Equal("کلید اختصاصی", item.GetProperty("apiKey").GetProperty("name").GetString());
+        Assert.Equal(200, item.GetProperty("httpStatus").GetInt32());
+
+        var unauthorized = await _client.GetAsync("/api/logs?page=1&pageSize=10");
+        Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+    }
+
     private static HttpRequestMessage Authorized(HttpMethod method, string path, string token, object? body = null)
     {
         var request = new HttpRequestMessage(method, path);

@@ -212,6 +212,52 @@ public static class Routes
             return Results.File(Encoding.UTF8.GetBytes(csv.ToString()), "text/csv; charset=utf-8", $"aibus-usage-{DateTime.UtcNow:yyyyMMdd-HHmm}.csv");
         });
 
+        api.MapGet("/logs", async (System.Security.Claims.ClaimsPrincipal p, AppDbContext db, [FromQuery] int page, [FromQuery] int pageSize, [FromQuery] string? search, [FromQuery] string? status, [FromQuery] Guid? apiKeyId, CancellationToken ct) =>
+        {
+            var userId = p.UserId();
+            page = Math.Max(1, page);
+            pageSize = Math.Clamp(pageSize, 10, 100);
+            var query = from usage in db.UsageRecords.AsNoTracking()
+                        where usage.UserId == userId
+                        join key in db.UserApiKeys.AsNoTracking() on usage.UserApiKeyId equals key.Id into keyGroup
+                        from key in keyGroup.DefaultIfEmpty()
+                        select new { usage, key };
+            if (!string.IsNullOrWhiteSpace(search))
+            {
+                var term = search.Trim();
+                query = query.Where(x => x.usage.ModelName.Contains(term) || x.usage.ProviderName.Contains(term)
+                    || x.usage.EndpointPath.Contains(term) || x.usage.TraceId.Contains(term)
+                    || x.key != null && (x.key.Name.Contains(term) || x.key.KeyPrefix.Contains(term)));
+            }
+            if (status is "success" or "failed") query = query.Where(x => x.usage.Status == status);
+            if (apiKeyId.HasValue) query = query.Where(x => x.usage.UserApiKeyId == apiKeyId.Value);
+
+            var total = await query.CountAsync(ct);
+            var items = await query.OrderByDescending(x => x.usage.CreatedAtUtc).Skip((page - 1) * pageSize).Take(pageSize)
+                .Select(x => new
+                {
+                    x.usage.Id, x.usage.CreatedAtUtc, x.usage.Status,
+                    httpStatus = x.usage.HttpStatus == 0 ? (x.usage.Status == "success" ? 200 : 502) : x.usage.HttpStatus,
+                    x.usage.DurationMs, x.usage.TraceId, x.usage.EndpointPath, x.usage.ModelName, x.usage.ProviderName,
+                    x.usage.InputTokens, x.usage.OutputTokens, x.usage.CostUsd,
+                    apiKey = x.key == null ? null : new { x.key.Id, x.key.Name, x.key.KeyPrefix }
+                }).ToListAsync(ct);
+            var since = DateTime.UtcNow.AddHours(-24);
+            var recent = db.UsageRecords.AsNoTracking().Where(x => x.UserId == userId && x.CreatedAtUtc >= since);
+            return Results.Ok(new
+            {
+                total, page, pageSize, items,
+                summary = new
+                {
+                    requests24h = await recent.CountAsync(ct),
+                    failures24h = await recent.CountAsync(x => x.Status == "failed", ct),
+                    averageLatencyMs24h = await recent.AnyAsync(ct) ? await recent.AverageAsync(x => (double)x.DurationMs, ct) : 0,
+                    activeApiKeys24h = await recent.Select(x => x.UserApiKeyId).Distinct().CountAsync(ct)
+                },
+                privacy = new { bodyStored = false, fields = new[] { "time", "status", "latency", "api key", "model", "token usage", "cost", "trace id" } }
+            });
+        });
+
         api.MapGet("/tickets", async (System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
         {
             var tickets = await db.SupportTickets.AsNoTracking().Where(x => x.UserId == p.UserId()).Include(x => x.Messages).OrderByDescending(x => x.UpdatedAtUtc).ToListAsync(ct);
