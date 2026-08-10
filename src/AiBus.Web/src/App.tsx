@@ -33,6 +33,7 @@ import {
   type UserKeyLimitDraft,
 } from './userKeyLimits'
 import { dragIntent } from './dragScroll'
+import { globalSearchMatches, rankGlobalSearch } from './globalSearch'
 
 type Page = 'dashboard'|'models'|'keys'|'wallet'|'usage'|'my-logs'|'tickets'|'admin-dashboard'|'providers'|'admin-models'|'users'|'admin-tickets'|'logs'|'visits'|'settings'
 type Portal = 'dashboard'|'arkachat'
@@ -43,6 +44,26 @@ const MediaPlayground=lazy(()=>import('./Playground').then(module=>({default:mod
 const ArkaChat=lazy(()=>import('./ArkaChat').then(module=>({default:module.ArkaChat})))
 
 const PAGE_LABELS:Record<Page,string>={dashboard:'نمای کلی',models:'مدل‌ها و آزمایشگاه',keys:'کلیدهای API',wallet:'کیف پول و شارژ',usage:'گزارش مصرف','my-logs':'لاگ درخواست‌های من',tickets:'پشتیبانی و تیکت‌ها','admin-dashboard':'مرکز کنترل',providers:'ارائه‌دهندگان و کلیدها','admin-models':'کاتالوگ و قیمت‌ها',users:'کاربران','admin-tickets':'مرکز پشتیبانی',logs:'لاگ درخواست‌ها',visits:'بازدید و تحلیل سایت',settings:'تنظیمات سامانه'}
+type NavigationItem={id:Page;label:string;icon:IconType;searchable:string}
+const USER_NAV_ITEMS:NavigationItem[]=[
+  {id:'dashboard',label:'نمای کلی',icon:LayoutDashboard,searchable:'نمای کلی داشبورد خانه آمار'},
+  {id:'models',label:'مدل‌ها و آزمایشگاه',icon:Bot,searchable:'مدل‌ها آزمایشگاه سرویس تست هوش مصنوعی'},
+  {id:'keys',label:'کلیدهای API',icon:KeyRound,searchable:'کلیدهای API دسترسی محدودیت مصرف'},
+  {id:'wallet',label:'کیف پول و شارژ',icon:Wallet,searchable:'کیف پول شارژ پرداخت موجودی دلار ریال'},
+  {id:'usage',label:'گزارش مصرف',icon:BarChart3,searchable:'گزارش مصرف نمودار هزینه توکن CSV'},
+  {id:'my-logs',label:'لاگ درخواست‌های من',icon:Activity,searchable:'لاگ درخواست‌های من خطا وضعیت latency trace'},
+  {id:'tickets',label:'پشتیبانی و تیکت‌ها',icon:LifeBuoy,searchable:'پشتیبانی تیکت پیام درخواست کمک'},
+]
+const ADMIN_NAV_ITEMS:NavigationItem[]=[
+  {id:'admin-dashboard',label:'مرکز کنترل',icon:Gauge,searchable:'مرکز کنترل داشبورد مدیریت آمار'},
+  {id:'providers',label:'ارائه‌دهندگان و کلیدها',icon:Network,searchable:'ارائه‌دهندگان شرکت کلید upstream API موجودی'},
+  {id:'admin-models',label:'کاتالوگ و قیمت‌ها',icon:Database,searchable:'کاتالوگ قیمت مدل سرویس تعرفه ARKA'},
+  {id:'users',label:'کاربران',icon:Users,searchable:'کاربران مشتری موبایل نقش سوپر ادمین تعلیق'},
+  {id:'admin-tickets',label:'مرکز پشتیبانی',icon:Headphones,searchable:'مرکز پشتیبانی تیکت کاربران'},
+  {id:'logs',label:'لاگ درخواست‌ها',icon:Activity,searchable:'لاگ درخواست‌ها خطا وضعیت latency trace'},
+  {id:'visits',label:'بازدید و تحلیل سایت',icon:Globe2,searchable:'بازدید تحلیل سایت مرورگر سیستم عامل IP آمار'},
+  {id:'settings',label:'تنظیمات سامانه',icon:Settings,searchable:'تنظیمات سامانه مالی نرخ ارز پیامک پرداخت امنیت'},
+]
 
 const COLORS = ['#66e3c4','#7b8cff','#ffb86b','#f472b6','#46b5ff','#a78bfa','#f87171','#34d399']
 
@@ -96,6 +117,61 @@ function DragScroll({className,children}:{className:string;children:ReactNode}){
   return <div ref={elementRef} className={`${className} drag-scroll${dragging?' is-dragging':''}`} onPointerDown={handlePointerDown} onPointerMove={handlePointerMove} onPointerUp={finishDrag} onPointerCancel={finishDrag} onLostPointerCapture={finishDrag} onClickCapture={preventDraggedClick} onDragStart={event=>event.preventDefault()}>{children}</div>
 }
 
+type GlobalSearchResult={kind:'page';page:NavigationItem}|{kind:'model';model:Model}
+function GlobalSearch({admin,navigate,searchModels}:{admin:boolean;navigate:(page:Page)=>void;searchModels:(query:string)=>void}){
+  const [query,setQuery]=useState(''),[open,setOpen]=useState(false),[models,setModels]=useState<Model[]|null>(null),[activeIndex,setActiveIndex]=useState(0)
+  const rootRef=useRef<HTMLDivElement>(null),inputRef=useRef<HTMLInputElement>(null)
+  const pages=useMemo(()=>admin?[...USER_NAV_ITEMS,...ADMIN_NAV_ITEMS]:USER_NAV_ITEMS,[admin])
+  useEffect(()=>{
+    const handleShortcut=(event:KeyboardEvent)=>{
+      if((event.ctrlKey||event.metaKey)&&event.key.toLowerCase()==='k'){
+        event.preventDefault();setOpen(true);requestAnimationFrame(()=>inputRef.current?.focus())
+      }else if(event.key==='Escape'&&open){setOpen(false);inputRef.current?.blur()}
+    }
+    const handleOutside=(event:PointerEvent)=>{if(event.target instanceof Node&&!rootRef.current?.contains(event.target))setOpen(false)}
+    window.addEventListener('keydown',handleShortcut);document.addEventListener('pointerdown',handleOutside)
+    return()=>{window.removeEventListener('keydown',handleShortcut);document.removeEventListener('pointerdown',handleOutside)}
+  },[open])
+  useEffect(()=>{
+    if(!open||models!==null)return
+    request<Model[]>('/api/models?includeInactive=true').then(setModels).catch(()=>setModels([]))
+  },[models,open])
+  const results=useMemo<GlobalSearchResult[]>(()=>{
+    const pageResults=rankGlobalSearch(pages,query,query.trim()?5:7).map(page=>({kind:'page' as const,page}))
+    if(query.trim().length<2)return pageResults
+    const modelResults=(models||[]).filter(model=>globalSearchMatches(`${model.displayName} ${model.modelId} ${model.provider.name} ${model.serviceType}`,query)).slice(0,6).map(model=>({kind:'model' as const,model}))
+    return [...pageResults,...modelResults]
+  },[models,pages,query])
+  useEffect(()=>setActiveIndex(0),[query])
+  useEffect(()=>{if(activeIndex>=results.length)setActiveIndex(Math.max(0,results.length-1))},[activeIndex,results.length])
+  const close=()=>{setOpen(false);setQuery('')}
+  const select=(result:GlobalSearchResult)=>{
+    if(result.kind==='page')navigate(result.page.id)
+    else searchModels(result.model.modelId)
+    close()
+  }
+  const handleKeyDown=(event:React.KeyboardEvent<HTMLInputElement>)=>{
+    if(event.key==='ArrowDown'){event.preventDefault();setOpen(true);setActiveIndex(index=>results.length?(index+1)%results.length:0)}
+    else if(event.key==='ArrowUp'){event.preventDefault();setOpen(true);setActiveIndex(index=>results.length?(index-1+results.length)%results.length:0)}
+    else if(event.key==='Enter'){
+      event.preventDefault()
+      if(results[activeIndex])select(results[activeIndex]);else if(query.trim()){searchModels(query.trim());close()}
+    }
+  }
+  return <div ref={rootRef} className={`top-search global-search ${open?'is-open':''}`}>
+    <Search/><input ref={inputRef} value={query} onFocus={()=>setOpen(true)} onChange={event=>{setQuery(event.target.value);setOpen(true)}} onKeyDown={handleKeyDown} placeholder="جست‌وجوی مدل، گزارش یا کاربر..." role="combobox" aria-label="جست‌وجوی سراسری" aria-expanded={open} aria-controls="global-search-results" aria-autocomplete="list"/><kbd>Ctrl K</kbd>
+    {open&&<div id="global-search-results" className="global-search-panel" role="listbox">
+      <header><span>جست‌وجوی سریع</span><small>↑↓ انتخاب · Enter ورود · Esc بستن</small></header>
+      <div className="global-search-results">{results.map((result,index)=>{
+        if(result.kind==='page'){const Icon=result.page.icon;return <button type="button" role="option" aria-selected={index===activeIndex} className={index===activeIndex?'active':''} key={`page-${result.page.id}`} onMouseEnter={()=>setActiveIndex(index)} onClick={()=>select(result)}><span className="global-result-icon"><Icon/></span><span><b>{result.page.label}</b><small>رفتن به بخش</small></span><ArrowLeft/></button>}
+        return <button type="button" role="option" aria-selected={index===activeIndex} className={index===activeIndex?'active':''} key={`model-${result.model.id}`} onMouseEnter={()=>setActiveIndex(index)} onClick={()=>select(result)}><ProviderLogo name={result.model.provider.name} url={result.model.provider.logoUrl} className="tiny"/><span><b dir="ltr">{result.model.displayName}</b><small>{result.model.provider.name} · {serviceLabel(result.model.serviceType)}</small></span><ArrowLeft/></button>
+      })}</div>
+      {!results.length&&<button type="button" className="global-search-all" onClick={()=>{searchModels(query.trim());close()}}><Search/><span><b>جست‌وجوی «{query.trim()}» در همه مدل‌ها</b><small>نمایش نتیجه در کاتالوگ و آزمایشگاه</small></span><ArrowLeft/></button>}
+      {models===null&&query.trim().length>=2&&<div className="global-search-loading"><RefreshCw className="spin"/>در حال جست‌وجوی مدل‌ها...</div>}
+    </div>}
+  </div>
+}
+
 export default function App(){
   const [user,setUser]=useState<User|null>(null)
   const [loading,setLoading]=useState(true)
@@ -105,6 +181,7 @@ export default function App(){
   const [profileOpen,setProfileOpen]=useState(false)
   const [authView,setAuthView]=useState<'landing'|'login'>(()=>location.pathname.toLowerCase().startsWith('/arkachat')?'login':'landing')
   const [dark,setDark]=useState(()=>localStorage.getItem('aibus_theme')!=='light')
+  const [catalogSearch,setCatalogSearch]=useState({value:'',version:0})
   const sidebarToggleRef=useRef<HTMLButtonElement>(null)
   const contentRef=useRef<HTMLDivElement>(null)
 
@@ -129,13 +206,14 @@ export default function App(){
   const isAdmin=user.role==='SuperAdmin'
   const closeSidebar=()=>{setSidebar(false);requestAnimationFrame(()=>sidebarToggleRef.current?.focus())}
   const navigatePage=(next:Page)=>{setPage(next);setSidebar(false);requestAnimationFrame(()=>{window.scrollTo({top:0,behavior:'auto'});contentRef.current?.focus()})}
+  const searchModels=(query:string)=>{setCatalogSearch(current=>({value:query,version:current.version+1}));navigatePage('models')}
   return <div className="app-shell">
     <Sidebar page={page} setPage={navigatePage} admin={isAdmin} open={sidebar} close={closeSidebar} />
     <main className="main">
       <header className="topbar">
         <button ref={sidebarToggleRef} className="icon-btn mobile-only" aria-label="بازکردن منوی پنل" aria-expanded={sidebar} aria-controls="app-sidebar" onClick={()=>setSidebar(true)}><Menu/></button>
         <span className="mobile-page-title">{PAGE_LABELS[page]}</span>
-        <div className="top-search"><Search/><input placeholder="جست‌وجوی مدل، گزارش یا کاربر..."/><kbd>⌘ K</kbd></div>
+        <GlobalSearch admin={isAdmin} navigate={navigatePage} searchModels={searchModels}/>
         <div className="top-actions">
           <button className="icon-btn" aria-label={dark?'فعال‌کردن پوسته روشن':'فعال‌کردن پوسته تیره'} onClick={()=>setDark(!dark)}>{dark?<Sun/>:<Moon/>}</button>
           <button className="icon-btn notification" aria-label="اعلان‌ها"><Bell/><span/></button>
@@ -145,7 +223,7 @@ export default function App(){
       </header>
       <div ref={contentRef} className="content" tabIndex={-1}>
         <Suspense fallback={<Loading/>}>
-        {page==='dashboard'&&<UserDashboard user={user}/>} {page==='models'&&<ModelsPage/>} {page==='keys'&&<KeysPage/>}
+        {page==='dashboard'&&<UserDashboard user={user}/>} {page==='models'&&<ModelsPage initialSearch={catalogSearch.value} searchVersion={catalogSearch.version}/>} {page==='keys'&&<KeysPage/>}
         {page==='wallet'&&<WalletPage user={user} refreshUser={refreshUser}/>} {page==='usage'&&<UsagePage/>} {page==='my-logs'&&<UserLogsPage/>} {page==='tickets'&&<TicketsPage/>}
         {page==='admin-dashboard'&&<AdminDashboard/>} {page==='providers'&&<ProvidersPage/>} {page==='admin-models'&&<AdminModelsPage/>}
         {page==='users'&&<UsersPage currentUserId={user.id} onImpersonate={(u,t)=>{sessionStorage.setItem('aibus_admin_token',localStorage.getItem('aibus_token')||'');localStorage.setItem('aibus_token',t);setUser(u);setPage('dashboard')}}/>}
@@ -299,9 +377,7 @@ function Login({onLogin,onBack,arkaChat=false}:{onLogin:(u:User,t:string)=>void;
 }
 
 function Sidebar({page,setPage,admin,open,close}:{page:Page;setPage:(p:Page)=>void;admin:boolean;open:boolean;close:()=>void}){
-  const userItems:{id:Page;label:string;icon:IconType}[]=[{id:'dashboard',label:'نمای کلی',icon:LayoutDashboard},{id:'models',label:'مدل‌ها و آزمایشگاه',icon:Bot},{id:'keys',label:'کلیدهای API',icon:KeyRound},{id:'wallet',label:'کیف پول و شارژ',icon:Wallet},{id:'usage',label:'گزارش مصرف',icon:BarChart3},{id:'my-logs',label:'لاگ درخواست‌های من',icon:Activity},{id:'tickets',label:'پشتیبانی و تیکت‌ها',icon:LifeBuoy}]
-  const adminItems:{id:Page;label:string;icon:IconType}[]=[{id:'admin-dashboard',label:'مرکز کنترل',icon:Gauge},{id:'providers',label:'ارائه‌دهندگان و کلیدها',icon:Network},{id:'admin-models',label:'کاتالوگ و قیمت‌ها',icon:Database},{id:'users',label:'کاربران',icon:Users},{id:'admin-tickets',label:'مرکز پشتیبانی',icon:Headphones},{id:'logs',label:'لاگ درخواست‌ها',icon:Activity},{id:'visits',label:'بازدید و تحلیل سایت',icon:Globe2},{id:'settings',label:'تنظیمات سامانه',icon:Settings}]
-  return <><aside id="app-sidebar" className={`sidebar ${open?'open':''}`} aria-label="منوی پنل"><button className="side-close" aria-label="بستن منوی پنل" onClick={close}><X/></button><Logo/><nav><small>فضای کاربری</small>{userItems.map(i=><SideItem key={i.id} {...i} active={page===i.id} click={()=>setPage(i.id)}/>)}{admin&&<><small className="admin-label">مدیریت سامانه</small>{adminItems.map(i=><SideItem key={i.id} {...i} active={page===i.id} click={()=>setPage(i.id)}/>)}</>}</nav><div className="side-status"><div className="pulse-dot"/><div><b>همه سامانه‌ها فعال‌اند</b><small>آخرین بررسی: همین حالا</small></div></div><div className="side-version">AiBus Platform <span>v1.0</span></div></aside>{open&&<div className="overlay" role="presentation" onClick={close}/>}</>
+  return <><aside id="app-sidebar" className={`sidebar ${open?'open':''}`} aria-label="منوی پنل"><button className="side-close" aria-label="بستن منوی پنل" onClick={close}><X/></button><Logo/><nav><small>فضای کاربری</small>{USER_NAV_ITEMS.map(i=><SideItem key={i.id} {...i} active={page===i.id} click={()=>setPage(i.id)}/>)}{admin&&<><small className="admin-label">مدیریت سامانه</small>{ADMIN_NAV_ITEMS.map(i=><SideItem key={i.id} {...i} active={page===i.id} click={()=>setPage(i.id)}/>)}</>}</nav><div className="side-status"><div className="pulse-dot"/><div><b>همه سامانه‌ها فعال‌اند</b><small>آخرین بررسی: همین حالا</small></div></div><div className="side-version">AiBus Platform <span>v1.0</span></div></aside>{open&&<div className="overlay" role="presentation" onClick={close}/>}</>
 }
 function SideItem({label,icon:Icon,active,click}:{label:string;icon:IconType;active:boolean;click:()=>void}){return <button className={`nav-item ${active?'active':''}`} aria-current={active?'page':undefined} onClick={click}><Icon/><span>{label}</span>{active&&<i/>}</button>}
 
@@ -351,9 +427,10 @@ const GATEWAY_ENDPOINTS=['/v1/chat/completions','/v1/responses','/v1/embeddings'
 const serviceLabel=(type:string)=>SERVICE_META[type]?.label||type
 const priceText=(value:number|null)=>value==null?'تماس با فروش':`$${usd(value,value<.01?6:4)}`
 
-function ModelsPage(){
-  const [models,setModels]=useState<Model[]>([]),[search,setSearch]=useState(''),[provider,setProvider]=useState('all'),[service,setService]=useState('all'),[selected,setSelected]=useState<Model|null>(null)
+function ModelsPage({initialSearch='',searchVersion=0}:{initialSearch?:string;searchVersion?:number}){
+  const [models,setModels]=useState<Model[]>([]),[search,setSearch]=useState(initialSearch),[provider,setProvider]=useState('all'),[service,setService]=useState('all'),[selected,setSelected]=useState<Model|null>(null)
   useEffect(()=>{request<Model[]>('/api/models?includeInactive=true').then(setModels).catch(e=>toast.error(e.message))},[])
+  useEffect(()=>{setSearch(initialSearch);setProvider('all');setService('all')},[initialSearch,searchVersion])
   const providers=useMemo(()=>Array.from(new Map(models.map(m=>[m.provider.slug,m.provider])).values()),[models])
   const serviceTypes=useMemo(()=>Object.keys(SERVICE_META).filter(type=>models.some(m=>m.serviceType===type)),[models])
   const filtered=models.filter(m=>(provider==='all'||m.provider.slug===provider)&&(service==='all'||m.serviceType===service)&&(`${m.displayName} ${m.modelId} ${m.provider.name}`.toLowerCase().includes(search.toLowerCase())))
