@@ -390,10 +390,13 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
         {
             "/api/me",
             "/api/models",
+            "/api/models?includeInactive=true",
             "/api/keys",
             "/api/dashboard",
             "/api/dashboard?from=2020-01-01&to=2030-01-01",
             "/api/usage?page=1&pageSize=20",
+            "/api/usage?page=1&pageSize=50&search=integration&from=2020-01-01&to=2030-01-01",
+            "/api/usage/export?search=integration&from=2020-01-01&to=2030-01-01",
             "/api/wallet/quote?amountUsd=10",
             "/api/admin/settings",
             "/api/admin/providers",
@@ -411,6 +414,27 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
             request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", result.Token);
             var response = await _client.SendAsync(request);
             Assert.True(response.IsSuccessStatusCode, $"{endpoint} returned {(int)response.StatusCode}: {await response.Content.ReadAsStringAsync()}");
+        }
+
+        using (var usageRequest = Authorized(HttpMethod.Get, "/api/usage?page=1&pageSize=50&search=integration&from=2020-01-01&to=2030-01-01", result.Token))
+        {
+            var usageResponse = await _client.SendAsync(usageRequest);
+            usageResponse.EnsureSuccessStatusCode();
+            using var usage = JsonDocument.Parse(await usageResponse.Content.ReadAsStringAsync());
+            Assert.Equal(1, usage.RootElement.GetProperty("total").GetInt32());
+            Assert.Equal(1, usage.RootElement.GetProperty("totals").GetProperty("requests").GetInt32());
+            Assert.Single(usage.RootElement.GetProperty("timeline").EnumerateArray());
+            Assert.Single(usage.RootElement.GetProperty("byModel").EnumerateArray());
+        }
+
+        using (var exportRequest = Authorized(HttpMethod.Get, "/api/usage/export?search=integration&from=2020-01-01&to=2030-01-01", result.Token))
+        {
+            var exportResponse = await _client.SendAsync(exportRequest);
+            exportResponse.EnsureSuccessStatusCode();
+            Assert.StartsWith("text/csv", exportResponse.Content.Headers.ContentType?.ToString());
+            var csv = await exportResponse.Content.ReadAsStringAsync();
+            Assert.Contains("Cost USD", csv);
+            Assert.Contains("integration-trace", csv);
         }
 
         using (var catalogRequest = Authorized(HttpMethod.Get, "/api/models", result.Token))
@@ -449,6 +473,15 @@ public sealed class GatewayTests(TestAppFactory factory) : IClassFixture<TestApp
                 Assert.True(model.GetProperty("inputPricePerMillionUsd").GetDecimal() >= 0);
                 Assert.True(model.GetProperty("outputPricePerMillionUsd").GetDecimal() >= 0);
             });
+        }
+
+        using (var fullCatalogRequest = Authorized(HttpMethod.Get, "/api/models?includeInactive=true", result.Token))
+        {
+            var fullCatalogResponse = await _client.SendAsync(fullCatalogRequest);
+            fullCatalogResponse.EnsureSuccessStatusCode();
+            using var fullCatalog = JsonDocument.Parse(await fullCatalogResponse.Content.ReadAsStringAsync());
+            Assert.True(fullCatalog.RootElement.GetArrayLength() >= 300);
+            Assert.All(fullCatalog.RootElement.EnumerateArray(), model => Assert.True(model.TryGetProperty("isActive", out _)));
         }
 
         using (var modelsRequest = new HttpRequestMessage(HttpMethod.Get, "/v1/models"))

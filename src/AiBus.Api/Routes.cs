@@ -80,9 +80,11 @@ public static class Routes
             await db.SaveChangesAsync(ct);
             return Results.Ok(UserView(user));
         });
-        api.MapGet("/models", async (AppDbContext db, CancellationToken ct) =>
+        api.MapGet("/models", async (AppDbContext db, [FromQuery] bool? includeInactive, CancellationToken ct) =>
         {
-            var models = await db.Models.AsNoTracking().Where(x => x.IsActive && x.Provider!.IsActive).Include(x => x.Provider).OrderBy(x => x.Provider!.Name).ThenBy(x => x.DisplayName).ToListAsync(ct);
+            var query = db.Models.AsNoTracking().Include(x => x.Provider).AsQueryable();
+            if (includeInactive != true) query = query.Where(x => x.IsActive && x.Provider!.IsActive);
+            var models = await query.OrderBy(x => x.Provider!.Name).ThenBy(x => x.DisplayName).ToListAsync(ct);
             return Results.Ok(models.Select(ModelView));
         });
 
@@ -169,9 +171,45 @@ public static class Routes
             var byModel = await usage.GroupBy(x => x.ModelName).Select(g => new { model = g.Key, requests = g.Count(), tokens = g.Sum(x => x.InputTokens + x.OutputTokens), costUsd = g.Sum(x => (double)x.CostUsd) }).OrderByDescending(x => x.tokens).Take(12).ToListAsync(ct);
             return Results.Ok(new { walletUsd = user.WalletUsd, walletIrr = user.WalletUsd * decimal.Parse((await db.Settings.FindAsync(["currency.usd_irr"], ct))?.Value ?? "0", CultureInfo.InvariantCulture), totals = totals ?? new { requests = 0, inputTokens = 0L, outputTokens = 0L, costUsd = 0d, avgLatencyMs = 0d }, timeline = timelineRaw, byModel });
         });
-        api.MapGet("/usage", async (System.Security.Claims.ClaimsPrincipal p, AppDbContext db, [FromQuery] int page, [FromQuery] int pageSize, CancellationToken ct) =>
+        api.MapGet("/usage", async (System.Security.Claims.ClaimsPrincipal p, AppDbContext db, [FromQuery] int page, [FromQuery] int pageSize, [FromQuery] string? search, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken ct) =>
         {
-            page = Math.Max(1, page); pageSize = Math.Clamp(pageSize, 10, 100); var q = db.UsageRecords.AsNoTracking().Where(x => x.UserId == p.UserId()).OrderByDescending(x => x.CreatedAtUtc); return Results.Ok(new { total = await q.CountAsync(ct), items = await q.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct) });
+            page = Math.Max(1, page); pageSize = Math.Clamp(pageSize, 10, 100);
+            var query = FilterUsage(db.UsageRecords.AsNoTracking().Where(x => x.UserId == p.UserId()), search, from, to);
+            var total = await query.CountAsync(ct);
+            var items = await query.OrderByDescending(x => x.CreatedAtUtc).Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct);
+            var totals = await query.GroupBy(_ => 1).Select(g => new
+            {
+                requests = g.Count(), inputTokens = g.Sum(x => x.InputTokens), outputTokens = g.Sum(x => x.OutputTokens),
+                costUsd = g.Sum(x => (double)x.CostUsd), avgLatencyMs = g.Average(x => x.DurationMs),
+                successRate = 100d * g.Count(x => x.Status == "success") / g.Count()
+            }).FirstOrDefaultAsync(ct);
+            var timeline = await query.GroupBy(x => x.CreatedAtUtc.Date).Select(g => new
+            {
+                date = g.Key, requests = g.Count(), tokens = g.Sum(x => x.InputTokens + x.OutputTokens),
+                inputTokens = g.Sum(x => x.InputTokens), outputTokens = g.Sum(x => x.OutputTokens),
+                costUsd = g.Sum(x => (double)x.CostUsd), avgLatencyMs = g.Average(x => x.DurationMs)
+            }).OrderBy(x => x.date).ToListAsync(ct);
+            var byModel = await query.GroupBy(x => x.ModelName).Select(g => new
+            {
+                model = g.Key, requests = g.Count(), tokens = g.Sum(x => x.InputTokens + x.OutputTokens),
+                costUsd = g.Sum(x => (double)x.CostUsd)
+            }).OrderByDescending(x => x.costUsd).Take(12).ToListAsync(ct);
+            return Results.Ok(new
+            {
+                total, page, pageSize, items,
+                totals = totals ?? new { requests = 0, inputTokens = 0L, outputTokens = 0L, costUsd = 0d, avgLatencyMs = 0d, successRate = 0d },
+                timeline, byModel
+            });
+        });
+        api.MapGet("/usage/export", async (System.Security.Claims.ClaimsPrincipal p, AppDbContext db, [FromQuery] string? search, [FromQuery] DateTime? from, [FromQuery] DateTime? to, CancellationToken ct) =>
+        {
+            var rows = await FilterUsage(db.UsageRecords.AsNoTracking().Where(x => x.UserId == p.UserId()), search, from, to)
+                .OrderByDescending(x => x.CreatedAtUtc).ToListAsync(ct);
+            var csv = new StringBuilder("\uFEFFCreated UTC,Model,Provider,Endpoint,Input Tokens,Output Tokens,Cost USD,Latency MS,Status,HTTP Status,Trace ID\r\n");
+            foreach (var row in rows)
+                csv.AppendJoin(',', row.CreatedAtUtc.ToString("O", CultureInfo.InvariantCulture), Csv(row.ModelName), Csv(row.ProviderName), Csv(row.EndpointPath),
+                    row.InputTokens, row.OutputTokens, row.CostUsd.ToString(CultureInfo.InvariantCulture), row.DurationMs, Csv(row.Status), row.HttpStatus.ToString(CultureInfo.InvariantCulture), Csv(row.TraceId)).Append("\r\n");
+            return Results.File(Encoding.UTF8.GetBytes(csv.ToString()), "text/csv; charset=utf-8", $"aibus-usage-{DateTime.UtcNow:yyyyMMdd-HHmm}.csv");
         });
 
         api.MapGet("/tickets", async (System.Security.Claims.ClaimsPrincipal p, AppDbContext db, CancellationToken ct) =>
@@ -744,7 +782,22 @@ public static class Routes
         if (m.CachedInputPricePerMillionUsd is not null) prices.Add(new("ورودی Cache", "million_text_tokens", m.CachedInputPricePerMillionUsd, null));
         return prices.ToArray();
     }
-    private static object ModelView(AiModel x) => new { x.Id, x.ProviderId, x.ModelId, x.DisplayName, x.Modality, inputModalities = InputModalities(x), x.OutputModality, x.ServiceType, x.EndpointPath, x.UpstreamBaseUrl, x.UpstreamPath, x.Region, x.IsPreview, pricingComponents = PricingComponents(x), x.PricingNotes, x.InputPricePerMillionUsd, x.OutputPricePerMillionUsd, x.CachedInputPricePerMillionUsd, x.ContextWindow, x.SupportsStreaming, x.SupportsWebSocket, x.PriceSyncedAtUtc, x.PricingSourceUrl, x.TestPayloadJson, provider = new { x.ProviderId, x.Provider!.Name, x.Provider.Slug, x.Provider.LogoUrl } };
+    private static IQueryable<UsageRecord> FilterUsage(IQueryable<UsageRecord> query, string? search, DateTime? from, DateTime? to)
+    {
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            var term = search.Trim();
+            query = query.Where(x => x.ModelName.Contains(term) || x.ProviderName.Contains(term) || x.TraceId.Contains(term) || x.Status.Contains(term));
+        }
+        if (from.HasValue) query = query.Where(x => x.CreatedAtUtc >= from.Value.Date);
+        if (to.HasValue)
+        {
+            var exclusiveEnd = to.Value.Date.AddDays(1);
+            query = query.Where(x => x.CreatedAtUtc < exclusiveEnd);
+        }
+        return query;
+    }
+    private static object ModelView(AiModel x) => new { x.Id, x.ProviderId, x.ModelId, x.DisplayName, x.Modality, inputModalities = InputModalities(x), x.OutputModality, x.ServiceType, x.EndpointPath, x.UpstreamBaseUrl, x.UpstreamPath, x.Region, x.IsPreview, pricingComponents = PricingComponents(x), x.PricingNotes, x.InputPricePerMillionUsd, x.OutputPricePerMillionUsd, x.CachedInputPricePerMillionUsd, x.ContextWindow, x.SupportsStreaming, x.SupportsWebSocket, x.IsActive, x.PriceSyncedAtUtc, x.PricingSourceUrl, x.TestPayloadJson, provider = new { x.ProviderId, x.Provider!.Name, x.Provider.Slug, x.Provider.LogoUrl, x.Provider.IsActive } };
     private static object AdminModelView(AiModel x) => new { x.Id, x.ProviderId, providerName = x.Provider!.Name, providerSlug = x.Provider.Slug, x.ModelId, x.DisplayName, x.Modality, inputModalities = InputModalities(x), x.OutputModality, x.ServiceType, x.EndpointPath, x.UpstreamBaseUrl, x.UpstreamPath, x.Region, x.IsPreview, pricingComponents = PricingComponents(x), x.PricingNotes, x.InputPricePerMillionUsd, x.OutputPricePerMillionUsd, x.CachedInputPricePerMillionUsd, x.ContextWindow, x.SupportsStreaming, x.SupportsWebSocket, x.IsActive, x.PriceSyncedAtUtc, x.PricingSourceUrl, x.TestPayloadJson };
     private static string Csv(string? value) => $"\"{(value ?? "").Replace("\"", "\"\"")}\"";
 }

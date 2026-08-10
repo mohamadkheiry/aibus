@@ -31,6 +31,11 @@ export const keyAllowsModel = (key: UserKey, modelId: string) => {
   return true
 }
 
+export const preferredArkaChatKey = (keys: UserKey[]) =>
+  keys.find(key => key.name.trim().toLocaleLowerCase() === 'arkachat' && key.isActive && key.canReveal)
+  || keys.find(key => key.isActive && key.canReveal)
+  || null
+
 export function extractAssistantText(value: unknown): string {
   const body = recordOf(value)
   if (!body) return ''

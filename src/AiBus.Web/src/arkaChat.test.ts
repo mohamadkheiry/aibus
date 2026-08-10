@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { Model, UserKey } from './api'
-import { extractAssistantText, isChatCompatibleModel, keyAllowsModel } from './arkaChatUtils'
+import { extractAssistantText, isChatCompatibleModel, keyAllowsModel, preferredArkaChatKey } from './arkaChatUtils'
 
 const key = (accessMode: string, modelRules: string[] = []): UserKey => ({
   id: 'key-1', name: 'ArkaChat', keyPrefix: 'aibus_', canReveal: true, isActive: true,
@@ -21,6 +21,14 @@ describe('ArkaChat helpers', () => {
     expect(keyAllowsModel(key('allow', ['gpt-test']), 'gpt-test')).toBe(true)
     expect(keyAllowsModel(key('allow', ['other']), 'gpt-test')).toBe(false)
     expect(keyAllowsModel(key('deny', ['gpt-test']), 'gpt-test')).toBe(false)
+  })
+
+  it('prefers the dedicated ArkaChat key and falls back to another usable user key', () => {
+    const general = { ...key('all'), id: 'general', name: 'General' }
+    const dedicated = { ...key('all'), id: 'chat', name: 'ArkaChat' }
+    expect(preferredArkaChatKey([general, dedicated])?.id).toBe('chat')
+    expect(preferredArkaChatKey([general])?.id).toBe('general')
+    expect(preferredArkaChatKey([{ ...dedicated, isActive: false }])).toBeNull()
   })
 
   it('accepts both chat-completions and Responses chat models', () => {
