@@ -131,7 +131,7 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
     private readonly HttpClient _client = factory.CreateClient();
 
     [Fact]
-    public async Task Arka_model_test_uses_its_private_base_url_and_does_not_audit_response_body()
+    public async Task Arka_model_test_needs_no_upstream_key_and_does_not_audit_response_body()
     {
         const string responseMarker = "TRANSIENT-UPSTREAM-TEST-BODY";
         factory.ProviderHandler.Reset(_ => ScriptedProviderHandler.JsonResponse(HttpStatusCode.OK, new { result = responseMarker }));
@@ -140,9 +140,7 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
         using (var scope = factory.Services.CreateScope())
         {
             var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
-            var secrets = scope.ServiceProvider.GetRequiredService<SecretProtector>();
             var provider = await db.Providers.SingleAsync(x => x.Slug == "arka");
-            db.ProviderCredentials.Add(new ProviderCredential { ProviderId = provider.Id, Label = "test", ProtectedApiKey = secrets.Protect("arka-upstream-key"), IsActive = true });
             var model = new AiModel
             {
                 ProviderId = provider.Id, ModelId = $"arka-route-{Guid.NewGuid():N}", DisplayName = "ARKA Route Test",
@@ -162,11 +160,71 @@ public sealed class ProviderQuotaTests(QuotaGatewayFactory factory) : IClassFixt
         response.EnsureSuccessStatusCode();
         Assert.Contains(responseMarker, await response.Content.ReadAsStringAsync());
         Assert.Equal("https://private.arka.example/root/v1/custom/chat", factory.ProviderHandler.CalledUris.Single().ToString().TrimEnd('/'));
+        Assert.Equal("", factory.ProviderHandler.CalledApiKeys.Single());
 
         using var verificationScope = factory.Services.CreateScope();
         var verificationDb = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
         var audit = await verificationDb.AuditLogs.AsNoTracking().SingleAsync(x => x.Action == "model.upstream.test" && x.EntityId == modelId.ToString());
         Assert.DoesNotContain(responseMarker, audit.DetailsJson);
+    }
+
+    [Fact]
+    public async Task Arka_gateway_works_without_provider_credential_and_records_keyless_usage()
+    {
+        factory.ProviderHandler.Reset(_ => ScriptedProviderHandler.JsonResponse(HttpStatusCode.OK, new
+        {
+            id = "arka-keyless-response",
+            choices = new[] { new { index = 0, message = new { role = "assistant", content = "OK" }, finish_reason = "stop" } },
+            usage = new { prompt_tokens = 100, completion_tokens = 50, total_tokens = 150 }
+        }));
+        var rawUserKey = $"aibus_arka_{Guid.NewGuid():N}";
+        string modelId;
+        Guid userKeyId;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            var provider = await db.Providers.SingleAsync(x => x.Slug == "arka");
+            var user = await db.Users.SingleAsync(x => x.Mobile == SuperAdministrators.PrimaryMobile);
+            user.WalletUsd = 10m;
+            modelId = $"arka-keyless-{Guid.NewGuid():N}";
+            var model = new AiModel
+            {
+                ProviderId = provider.Id,
+                ModelId = modelId,
+                DisplayName = "ARKA Keyless Gateway",
+                EndpointPath = "/v1/chat/completions",
+                UpstreamBaseUrl = "https://private.arka.example/v1",
+                UpstreamPath = "/chat/completions",
+                InputPricePerMillionUsd = 1m,
+                OutputPricePerMillionUsd = 2m,
+                InputModalitiesJson = "[\"text\"]",
+                OutputModality = "text"
+            };
+            var userKey = new UserApiKey
+            {
+                UserId = user.Id,
+                Name = "ARKA keyless test",
+                KeyHash = Hashing.Sha256(rawUserKey),
+                KeyPrefix = rawUserKey[..Math.Min(14, rawUserKey.Length)]
+            };
+            db.Models.Add(model);
+            db.UserApiKeys.Add(userKey);
+            await db.SaveChangesAsync();
+            userKeyId = userKey.Id;
+        }
+
+        using var gatewayRequest = GatewayRequest(rawUserKey, modelId);
+        var gatewayResponse = await _client.SendAsync(gatewayRequest);
+        gatewayResponse.EnsureSuccessStatusCode();
+        Assert.Equal("", factory.ProviderHandler.CalledApiKeys.Single());
+        Assert.Equal("https://private.arka.example/v1/chat/completions", factory.ProviderHandler.CalledUris.Single().ToString().TrimEnd('/'));
+
+        using var verificationScope = factory.Services.CreateScope();
+        var verificationDb = verificationScope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var usage = await verificationDb.UsageRecords.AsNoTracking().SingleAsync(x => x.UserApiKeyId == userKeyId);
+        Assert.Null(usage.ProviderCredentialId);
+        Assert.Equal("success", usage.Status);
+        Assert.Equal(0.0002m, usage.CostUsd);
     }
 
     [Fact]

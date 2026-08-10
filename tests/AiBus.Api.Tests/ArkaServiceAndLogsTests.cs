@@ -14,6 +14,44 @@ public sealed class ArkaServiceAndLogsTests(TestAppFactory factory) : IClassFixt
     private readonly HttpClient _client = factory.CreateClient();
 
     [Fact]
+    public async Task Arka_is_listed_as_keyless_provider_and_rejects_provider_keys()
+    {
+        Guid providerId;
+        string token;
+        using (var scope = factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+            providerId = (await db.Providers.AsNoTracking().SingleAsync(x => x.Slug == "arka")).Id;
+            var admin = await db.Users.AsNoTracking().SingleAsync(x => x.Mobile == SuperAdministrators.PrimaryMobile);
+            token = scope.ServiceProvider.GetRequiredService<TokenService>().Create(admin);
+        }
+
+        using (var providersRequest = Authorized(HttpMethod.Get, "/api/admin/providers", token))
+        {
+            var providersResponse = await _client.SendAsync(providersRequest);
+            providersResponse.EnsureSuccessStatusCode();
+            using var providers = JsonDocument.Parse(await providersResponse.Content.ReadAsStringAsync());
+            var arka = providers.RootElement.EnumerateArray().Single(x => x.GetProperty("slug").GetString() == "arka");
+            Assert.False(arka.GetProperty("requiresApiKey").GetBoolean());
+            Assert.Empty(arka.GetProperty("credentials").EnumerateArray());
+        }
+
+        using var createKey = Authorized(HttpMethod.Post, $"/api/admin/providers/{providerId}/credentials", token, new
+        {
+            label = "must-be-rejected",
+            apiKey = "must-not-be-stored",
+            isActive = true,
+            initialBalanceUsd = 0,
+            remainingBalanceUsd = 0,
+            alertThresholdUsd = 0
+        });
+        var createKeyResponse = await _client.SendAsync(createKey);
+        Assert.Equal(HttpStatusCode.BadRequest, createKeyResponse.StatusCode);
+        using var error = JsonDocument.Parse(await createKeyResponse.Content.ReadAsStringAsync());
+        Assert.Equal("arka_provider_key_not_required", error.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
     public async Task Admin_can_publish_arka_service_with_explicit_io_and_private_upstream_route()
     {
         Guid providerId;

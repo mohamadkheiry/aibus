@@ -6,7 +6,7 @@
 
 - ورود بدون رمز با موبایل و OTP، با شماره‌های `09015909044` و `09198909381` به‌عنوان سوپرادمین
 - Gateway سازگار با OpenAI برای `chat/completions`، حالت SSE Stream و WebSocket Realtime
-- برند داخلی ARKA برای افزودن سرویس‌های OpenAI-compatible با Base URL و مسیر مستقل، ورودی چندگانه متن/تصویر/صوت/ویدیو و خروجی صریح
+- برند داخلی ARKA برای افزودن سرویس‌های OpenAI-compatible بدون API Key مبدا، با Base URL و مسیر مستقل، ورودی چندگانه متن/تصویر/صوت/ویدیو و خروجی صریح
 - کاتالوگ ۳۴۱ سرویس مرجع (۳۲۱ سرویس فعال) از ۱۷ ارائه‌دهنده شامل OpenAI، Gemini، Anthropic، DeepSeek، Kimi، GLM، xAI، Mistral، Qwen، Cohere، ElevenLabs، Deepgram، AssemblyAI، Google Cloud Speech، AWS، Speechmatics و Gladia
 - چند API key برای هر Provider، failover، موجودی اولیه، باقی‌مانده و هشدار کمبود اعتبار
 - قیمت چندواحدی متن و صوت شامل توکن متن/صوت/تصویر، دقیقه، ساعت، ثانیه، کاراکتر، پیام و صدا، همراه لینک رسمی منبع و تاریخ snapshot

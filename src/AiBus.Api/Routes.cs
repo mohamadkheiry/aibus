@@ -370,16 +370,19 @@ public static class Routes
             return sent ? Results.Ok(new { message = "پیامک آزمایشی با موفقیت ارسال شد." }) : Results.Json(new { message = "ارسال پیامک ناموفق بود؛ کلید، قالب و وضعیت سرویس SMS.ir را بررسی کنید." }, statusCode: 502);
         });
 
-        admin.MapGet("/providers", async (AppDbContext db, SecretProtector secrets, CancellationToken ct) => Results.Ok((await db.Providers.AsNoTracking().Include(x => x.Credentials).Include(x => x.Models).OrderBy(x => x.Name).ToListAsync(ct)).Select(x => new { x.Id, x.Name, x.Slug, x.LogoUrl, x.BaseUrl, x.PricingUrl, x.Protocol, x.IsActive, modelCount = x.Models.Count, credentials = x.Credentials.Where(c => !string.IsNullOrEmpty(c.ProtectedApiKey)).Select(c => new { c.Id, c.Label, apiKey = secrets.Unprotect(c.ProtectedApiKey), c.IsActive, c.InitialBalanceUsd, c.RemainingBalanceUsd, c.AlertThresholdUsd, c.RequestCount, c.LastUsedAtUtc, c.LastError, c.LastErrorCode, c.LastErrorAtUtc, isQuotaExhausted = c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode, isLow = c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode || c.InitialBalanceUsd > 0 && c.RemainingBalanceUsd <= c.AlertThresholdUsd }) })));
+        admin.MapGet("/providers", async (AppDbContext db, SecretProtector secrets, CancellationToken ct) => Results.Ok((await db.Providers.AsNoTracking().Include(x => x.Credentials).Include(x => x.Models).OrderBy(x => x.Name).ToListAsync(ct)).Select(x => new { x.Id, x.Name, x.Slug, x.LogoUrl, x.BaseUrl, x.PricingUrl, x.Protocol, x.IsActive, requiresApiKey = x.Slug != "arka", modelCount = x.Models.Count, credentials = x.Credentials.Where(c => x.Slug != "arka" && !string.IsNullOrEmpty(c.ProtectedApiKey)).Select(c => new { c.Id, c.Label, apiKey = secrets.Unprotect(c.ProtectedApiKey), c.IsActive, c.InitialBalanceUsd, c.RemainingBalanceUsd, c.AlertThresholdUsd, c.RequestCount, c.LastUsedAtUtc, c.LastError, c.LastErrorCode, c.LastErrorAtUtc, isQuotaExhausted = c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode, isLow = c.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode || c.InitialBalanceUsd > 0 && c.RemainingBalanceUsd <= c.AlertThresholdUsd }) })));
         admin.MapPost("/providers", async (ProviderRequest req, AppDbContext db, CancellationToken ct) => { var p = new AiProvider { Name = req.Name, Slug = req.Slug, LogoUrl = req.LogoUrl, BaseUrl = req.BaseUrl, PricingUrl = req.PricingUrl, Protocol = req.Protocol, IsActive = req.IsActive }; db.Add(p); await db.SaveChangesAsync(ct); return Results.Ok(p); });
         admin.MapPut("/providers/{id:guid}", async (Guid id, ProviderRequest req, AppDbContext db, CancellationToken ct) => { var p = await db.Providers.FindAsync([id], ct); if (p is null) return Results.NotFound(); p.Name = req.Name; p.Slug = req.Slug; p.LogoUrl = req.LogoUrl; p.BaseUrl = req.BaseUrl; p.PricingUrl = req.PricingUrl; p.Protocol = req.Protocol; p.IsActive = req.IsActive; await db.SaveChangesAsync(ct); return Results.NoContent(); });
         admin.MapPost("/providers/{id:guid}/credentials", async (Guid id, CredentialRequest req, AppDbContext db, SecretProtector secrets, CancellationToken ct) =>
         {
+            var provider = await db.Providers.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, ct);
+            if (provider is null) return Results.NotFound();
+            if (provider.Slug == "arka")
+                return Results.BadRequest(new { code = "arka_provider_key_not_required", message = "سرویس‌های ARKA بدون API Key مبدا فراخوانی می‌شوند." });
             if (!ValidCredentialBalances(req.InitialBalanceUsd, req.RemainingBalanceUsd, req.AlertThresholdUsd))
                 return InvalidCredentialBalance();
             if (string.IsNullOrWhiteSpace(req.ApiKey))
                 return Results.BadRequest(new { code = "invalid_provider_api_key", message = "مقدار API Key نمی‌تواند خالی باشد." });
-            if (!await db.Providers.AnyAsync(x => x.Id == id, ct)) return Results.NotFound();
             var c = new ProviderCredential { ProviderId = id, Label = req.Label, ProtectedApiKey = secrets.Protect(req.ApiKey), IsActive = req.IsActive, InitialBalanceUsd = req.InitialBalanceUsd, RemainingBalanceUsd = req.RemainingBalanceUsd, AlertThresholdUsd = req.AlertThresholdUsd };
             db.Add(c); await db.SaveChangesAsync(ct); return Results.Ok(new { c.Id });
         });
@@ -461,14 +464,15 @@ public static class Routes
             var model = await db.Models.Include(x => x.Provider).ThenInclude(x => x!.Credentials).SingleOrDefaultAsync(x => x.Id == id, ct);
             if (model?.Provider is null) return Results.NotFound();
             var credential = model.Provider.Credentials.Where(x => x.IsActive && x.ProtectedApiKey != "").OrderBy(x => x.LastUsedAtUtc).FirstOrDefault();
-            if (credential is null) return Results.BadRequest(new { message = "ابتدا برای برند انتخاب‌شده یک کلید upstream فعال ثبت کنید." });
+            var isArka = model.Provider.Slug == "arka";
+            if (credential is null && !isArka) return Results.BadRequest(new { message = "ابتدا برای برند انتخاب‌شده یک کلید upstream فعال ثبت کنید." });
             JsonDocument payload;
             try { payload = JsonDocument.Parse(string.IsNullOrWhiteSpace(model.TestPayloadJson) ? "{}" : model.TestPayloadJson); }
             catch (JsonException) { return Results.BadRequest(new { message = "payload آزمایشی JSON معتبر نیست." }); }
             using (payload)
             using (var request = new HttpRequestMessage(HttpMethod.Post, ModelUpstreamUri(model)))
             {
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secrets.Unprotect(credential.ProtectedApiKey));
+                if (credential is not null) request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", secrets.Unprotect(credential.ProtectedApiKey));
                 request.Content = new StringContent(payload.RootElement.GetRawText(), Encoding.UTF8, "application/json");
                 var stopwatch = System.Diagnostics.Stopwatch.StartNew();
                 try
@@ -476,15 +480,19 @@ public static class Routes
                     using var response = await clients.CreateClient("providers").SendAsync(request, ct);
                     var responseText = await response.Content.ReadAsStringAsync(ct);
                     ProviderFailure? failure = null;
-                    if (response.IsSuccessStatusCode) ProviderErrorMapper.Clear(credential);
-                    else { failure = ProviderErrorMapper.Classify(response.StatusCode, responseText); ProviderErrorMapper.Apply(credential, failure); }
+                    if (credential is not null)
+                    {
+                        if (response.IsSuccessStatusCode) ProviderErrorMapper.Clear(credential);
+                        else { failure = ProviderErrorMapper.Classify(response.StatusCode, responseText); ProviderErrorMapper.Apply(credential, failure); }
+                    }
+                    else if (!response.IsSuccessStatusCode) failure = ProviderErrorMapper.Classify(response.StatusCode, responseText);
                     db.AuditLogs.Add(new AuditLog { ActorUserId = actor.UserId(), Action = "model.upstream.test", EntityType = "model", EntityId = model.Id.ToString(), DetailsJson = JsonSerializer.Serialize(new { success = response.IsSuccessStatusCode, status = (int)response.StatusCode, latencyMs = stopwatch.ElapsedMilliseconds, model.ProviderId }) });
                     await db.SaveChangesAsync(ct);
                     return Results.Ok(new { success = response.IsSuccessStatusCode, status = (int)response.StatusCode, latencyMs = stopwatch.ElapsedMilliseconds, contentType = response.Content.Headers.ContentType?.ToString(), errorCode = failure?.Code, response = responseText[..Math.Min(4000, responseText.Length)] });
                 }
                 catch (Exception exception) when (!ct.IsCancellationRequested)
                 {
-                    var failure = ProviderErrorMapper.Classify(exception); ProviderErrorMapper.Apply(credential, failure);
+                    var failure = ProviderErrorMapper.Classify(exception); if (credential is not null) ProviderErrorMapper.Apply(credential, failure);
                     db.AuditLogs.Add(new AuditLog { ActorUserId = actor.UserId(), Action = "model.upstream.test", EntityType = "model", EntityId = model.Id.ToString(), DetailsJson = JsonSerializer.Serialize(new { success = false, status = 502, latencyMs = stopwatch.ElapsedMilliseconds, model.ProviderId, failure.Code }) });
                     await db.SaveChangesAsync(CancellationToken.None);
                     return Results.Ok(new { success = false, status = 502, latencyMs = stopwatch.ElapsedMilliseconds, errorCode = failure.Code, response = "" });
@@ -618,7 +626,7 @@ public static class Routes
             var now = DateTime.UtcNow; var today = now.Date; var month = today.AddDays(-29); var usages = db.UsageRecords.AsNoTracking(); var visits = db.Visits.AsNoTracking();
             var timeline = await usages.Where(x => x.CreatedAtUtc >= month).GroupBy(x => x.CreatedAtUtc.Date).Select(g => new { date = g.Key, requests = g.Count(), tokens = g.Sum(x => x.InputTokens + x.OutputTokens), revenueUsd = g.Sum(x => (double)x.CostUsd) }).OrderBy(x => x.date).ToListAsync(ct);
             var models = await usages.Where(x => x.CreatedAtUtc >= month).GroupBy(x => x.ModelName).Select(g => new { model = g.Key, tokens = g.Sum(x => x.InputTokens + x.OutputTokens), requests = g.Count(), revenueUsd = g.Sum(x => (double)x.CostUsd) }).OrderByDescending(x => x.tokens).Take(10).ToListAsync(ct);
-            var lowKeys = await db.ProviderCredentials.Include(x => x.Provider).Where(x => x.IsActive && (x.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode || x.InitialBalanceUsd > 0 && x.RemainingBalanceUsd <= x.AlertThresholdUsd)).Select(x => new { x.Id, x.Label, provider = x.Provider!.Name, x.RemainingBalanceUsd, x.AlertThresholdUsd, x.LastErrorCode, x.LastErrorAtUtc, isQuotaExhausted = x.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode }).ToListAsync(ct);
+            var lowKeys = await db.ProviderCredentials.Include(x => x.Provider).Where(x => x.Provider!.Slug != "arka" && x.IsActive && (x.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode || x.InitialBalanceUsd > 0 && x.RemainingBalanceUsd <= x.AlertThresholdUsd)).Select(x => new { x.Id, x.Label, provider = x.Provider!.Name, x.RemainingBalanceUsd, x.AlertThresholdUsd, x.LastErrorCode, x.LastErrorAtUtc, isQuotaExhausted = x.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode }).ToListAsync(ct);
             return Results.Ok(new { users = await db.Users.CountAsync(ct), online = await db.Users.CountAsync(x => x.LastSeenAtUtc >= now.AddMinutes(-5), ct), walletLiabilityUsd = await db.Users.SumAsync(x => (double)x.WalletUsd, ct), todayRequests = await usages.CountAsync(x => x.CreatedAtUtc >= today, ct), todayTokens = await usages.Where(x => x.CreatedAtUtc >= today).SumAsync(x => x.InputTokens + x.OutputTokens, ct), todayRevenueUsd = await usages.Where(x => x.CreatedAtUtc >= today).SumAsync(x => (double)x.CostUsd, ct), uniqueToday = await visits.Where(x => x.CreatedAtUtc >= today).Select(x => x.VisitorId).Distinct().CountAsync(ct), visitsToday = await visits.CountAsync(x => x.CreatedAtUtc >= today, ct), totalVisits = await visits.CountAsync(ct), timeline, models, lowKeys });
         });
         admin.MapGet("/visits", async (AppDbContext db, [FromQuery] int page, [FromQuery] int pageSize, CancellationToken ct) => { page = Math.Max(1, page); pageSize = Math.Clamp(pageSize, 10, 100); var q = db.Visits.AsNoTracking().OrderByDescending(x => x.CreatedAtUtc); return Results.Ok(new { total = await q.CountAsync(ct), items = await q.Skip((page - 1) * pageSize).Take(pageSize).ToListAsync(ct), browsers = await db.Visits.GroupBy(x => x.Browser).Select(g => new { name = g.Key, value = g.Count() }).ToListAsync(ct), systems = await db.Visits.GroupBy(x => x.OperatingSystem).Select(g => new { name = g.Key, value = g.Count() }).ToListAsync(ct) }); });

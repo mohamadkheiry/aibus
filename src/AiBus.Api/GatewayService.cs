@@ -21,7 +21,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         var model = await db.Models.Include(x => x.Provider).SingleOrDefaultAsync(x => x.ModelId == modelName && x.IsActive && x.SupportsWebSocket && x.Provider!.IsActive, ct);
         if (model?.Provider is null) { context.Response.StatusCode = 404; return; }
         if (!await CheckAccess(context, user, userKey, model, ct)) return;
-        var credentials = await ActiveCredentials(model.ProviderId, ct);
+        var credentials = await ActiveCredentials(model.Provider, ct);
         if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
         if (!await ReserveRequestSlot(context, userKey, ct)) return;
 
@@ -144,7 +144,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             if (model?.Provider is null || model.ServiceType is not ("text_to_speech" or "voice_clone" or "voice_design")) { await WriteError(context, 404, "model_not_found", "مدل فعال متن‌به‌صوت پیدا نشد."); return; }
             if (!await CheckAccess(context, user, userKey, model, ct)) return;
 
-            var credentials = await ActiveCredentials(model.ProviderId, ct);
+            var credentials = await ActiveCredentials(model.Provider, ct);
             if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
             if (!await ReserveRequestSlot(context, userKey, ct)) return;
             var started = Stopwatch.StartNew();
@@ -224,7 +224,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         var model = await db.Models.Include(x => x.Provider).SingleOrDefaultAsync(x => x.ModelId == modelName && x.IsActive && x.Provider!.IsActive, ct);
         if (model?.Provider is null || model.ServiceType is not ("speech_to_text" or "translation" or "audio_understanding")) { await WriteError(context, 404, "model_not_found", "مدل فعال صوت‌به‌متن پیدا نشد."); return; }
         if (!await CheckAccess(context, user, userKey, model, ct)) return;
-        var credentials = await ActiveCredentials(model.ProviderId, ct);
+        var credentials = await ActiveCredentials(model.Provider, ct);
         if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
 
         await using var source = file.OpenReadStream();
@@ -304,7 +304,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
 
             if (!await CheckAccess(context, user, userKey, model, ct)) return;
 
-            var credentials = await ActiveCredentials(model.ProviderId, ct);
+            var credentials = await ActiveCredentials(model.Provider, ct);
             if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
             if (!await ReserveRequestSlot(context, userKey, ct)) return;
 
@@ -448,7 +448,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             { await WriteError(context, 400, "endpoint_mismatch", $"این مدل باید از مسیر {model.EndpointPath} فراخوانی شود."); return; }
             if (!await CheckAccess(context, user, userKey, model, ct)) return;
 
-            var credentials = await ActiveCredentials(model.ProviderId, ct);
+            var credentials = await ActiveCredentials(model.Provider, ct);
             if (credentials.Count == 0) { await WriteError(context, 503, ProviderErrorMapper.UnavailableCode, "این سرویس موقتاً در دسترس نیست. هزینه‌ای از کیف پول شما کسر نشد."); return; }
             if (!await ReserveRequestSlot(context, userKey, ct)) return;
             var stream = body.RootElement.TryGetProperty("stream", out var streamProperty) && streamProperty.ValueKind == JsonValueKind.True;
@@ -578,11 +578,24 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         return false;
     }
 
-    private Task<List<ProviderCredential>> ActiveCredentials(Guid providerId, CancellationToken ct) =>
-        db.ProviderCredentials.Where(x => x.ProviderId == providerId && x.IsActive && x.ProtectedApiKey != "")
+    private async Task<List<ProviderCredential>> ActiveCredentials(AiProvider provider, CancellationToken ct)
+    {
+        if (provider.Slug == "arka")
+        {
+            return [new ProviderCredential
+            {
+                Id = Guid.Empty,
+                ProviderId = provider.Id,
+                Provider = provider,
+                Label = "مسیر داخلی ARKA",
+                IsActive = true
+            }];
+        }
+        return await db.ProviderCredentials.Where(x => x.ProviderId == provider.Id && x.IsActive && x.ProtectedApiKey != "")
             .OrderBy(x => x.LastErrorCode == ProviderErrorMapper.QuotaExhaustedCode)
             .ThenByDescending(x => (double)x.RemainingBalanceUsd > (double)x.AlertThresholdUsd)
             .ThenBy(x => x.LastUsedAtUtc).ToListAsync(ct);
+    }
 
     private async Task<HttpResponseMessage> SendJson(AiModel model, ProviderCredential credential, JsonElement body, CancellationToken ct)
     {
@@ -648,6 +661,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
 
     private static void ConfigureAuthentication(HttpRequestMessage request, AiProvider provider, AiModel model, string apiKey)
     {
+        if (provider.Slug == "arka") return;
         if (provider.Slug == "gemini" && model.UpstreamPath.StartsWith("/v1beta/", StringComparison.OrdinalIgnoreCase))
         {
             request.Headers.TryAddWithoutValidation("x-goog-api-key", apiKey);
@@ -664,6 +678,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
 
     private static void ConfigureWebSocketAuthentication(ClientWebSocket socket, AiProvider provider, AiModel model, string apiKey)
     {
+        if (provider.Slug == "arka") return;
         if (provider.Slug == "gemini" && model.UpstreamPath.StartsWith("/v1beta/", StringComparison.OrdinalIgnoreCase))
         {
             socket.Options.SetRequestHeader("x-goog-api-key", apiKey);
@@ -744,7 +759,7 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
         }
         else
         {
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
+            if (provider.Slug != "arka") request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             var payload = body.GetRawText();
             if (stream)
             {
@@ -759,7 +774,8 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
 
     private async Task Record(AppUser user, UserApiKey key, AiModel model, ProviderCredential credential, long input, long output, decimal cost, long durationMs, string status, string traceId, CancellationToken ct, int? httpStatus = null)
     {
-        var usage = new UsageRecord { UserId = user.Id, UserApiKeyId = key.Id, ModelId = model.Id, ProviderCredentialId = credential.Id, ModelName = model.ModelId, ProviderName = model.Provider!.Name, InputTokens = input, OutputTokens = output, CostUsd = cost, DurationMs = (int)Math.Min(int.MaxValue, durationMs), Status = status, TraceId = traceId, EndpointPath = model.EndpointPath, HttpStatus = httpStatus ?? (status == "success" ? 200 : 502) };
+        var credentialId = credential.Id == Guid.Empty ? (Guid?)null : credential.Id;
+        var usage = new UsageRecord { UserId = user.Id, UserApiKeyId = key.Id, ModelId = model.Id, ProviderCredentialId = credentialId, ModelName = model.ModelId, ProviderName = model.Provider!.Name, InputTokens = input, OutputTokens = output, CostUsd = cost, DurationMs = (int)Math.Min(int.MaxValue, durationMs), Status = status, TraceId = traceId, EndpointPath = model.EndpointPath, HttpStatus = httpStatus ?? (status == "success" ? 200 : 502) };
         if (status == "success")
         {
             var completedAtUtc = DateTime.UtcNow;
@@ -769,16 +785,17 @@ public sealed class GatewayService(AppDbContext db, ApiKeyAuthenticator auth, Se
             await db.Users.Where(x => x.Id == user.Id)
                 .ExecuteUpdateAsync(update => update.SetProperty(x => x.WalletUsd,
                     x => x.WalletUsd >= cost ? x.WalletUsd - cost : 0m), ct);
-            await db.ProviderCredentials.Where(x => x.Id == credential.Id)
-                .ExecuteUpdateAsync(update => update
-                    .SetProperty(x => x.RequestCount, x => x.RequestCount + 1)
-                    .SetProperty(x => x.LastUsedAtUtc, completedAtUtc)
-                    .SetProperty(x => x.RemainingBalanceUsd, x => x.InitialBalanceUsd <= 0
-                        ? x.RemainingBalanceUsd
-                        : x.RemainingBalanceUsd >= cost ? x.RemainingBalanceUsd - cost : 0m)
-                    .SetProperty(x => x.LastError, (string?)null)
-                    .SetProperty(x => x.LastErrorCode, (string?)null)
-                    .SetProperty(x => x.LastErrorAtUtc, (DateTime?)null), ct);
+            if (credentialId.HasValue)
+                await db.ProviderCredentials.Where(x => x.Id == credentialId.Value)
+                    .ExecuteUpdateAsync(update => update
+                        .SetProperty(x => x.RequestCount, x => x.RequestCount + 1)
+                        .SetProperty(x => x.LastUsedAtUtc, completedAtUtc)
+                        .SetProperty(x => x.RemainingBalanceUsd, x => x.InitialBalanceUsd <= 0
+                            ? x.RemainingBalanceUsd
+                            : x.RemainingBalanceUsd >= cost ? x.RemainingBalanceUsd - cost : 0m)
+                        .SetProperty(x => x.LastError, (string?)null)
+                        .SetProperty(x => x.LastErrorCode, (string?)null)
+                        .SetProperty(x => x.LastErrorAtUtc, (DateTime?)null), ct);
             db.UsageRecords.Add(usage);
             await db.SaveChangesAsync(ct);
             await transaction.CommitAsync(ct);
