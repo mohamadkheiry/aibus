@@ -1,0 +1,5 @@
+<resources>
+  <color name="arka_bg">#08121E</color><color name="arka_panel">#101D2D</color><color name="arka_panel_2">#17283B</color>
+  <color name="arka_border">#293D55</color><color name="arka_text">#F4F8FC</color><color name="arka_muted">#8EA4BC</color>
+  <color name="arka_mint">#61E2C2</color><color name="arka_dark_mint">#06231D</color><color name="arka_warning">#FFB86B</color>
+</resources>

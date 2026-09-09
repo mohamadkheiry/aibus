@@ -1,0 +1,40 @@
+services:
+  api:
+    build: ./src/AiBus.Api
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__Default: Data Source=/data/aibus.db
+      Jwt__Key: ${JWT_KEY:?JWT_KEY must be set}
+      Bootstrap__ExposeSuperAdminOtp: ${EXPOSE_SUPERADMIN_OTP:-false}
+      DataProtection__KeysPath: /keys
+      Backups__Enabled: "true"
+      Backups__Directory: /data/backups
+      Backups__RetentionDays: "30"
+      CorsOrigins__0: http://localhost:8088
+    volumes:
+      - aibus-data:/data
+      - aibus-keys:/keys
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+  web:
+    build: ./src/AiBus.Web
+    restart: unless-stopped
+    ports:
+      - "8088:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/health | grep -q Healthy || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+volumes:
+  aibus-data:
+  aibus-keys:

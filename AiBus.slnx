@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="src/AiBus.Api/AiBus.Api.csproj" />
+  <Project Path="tests/AiBus.Api.Tests/AiBus.Api.Tests.csproj" />
+</Solution>
