@@ -55,6 +55,16 @@ docker compose up --build -d
 
 داشبورد روی `http://localhost:8088` در دسترس است. دیتابیس و کلیدهای Data Protection در volumeهای جداگانه ماندگار می‌شوند.
 
+### پایداری اجرای محلی در ویندوز
+
+کانتینرهای API و Web سیاست `restart: unless-stopped` و health check مستقل دارند. برای اجرای خودکار Docker و بازیابی AiBus پس از ورود به ویندوز یا توقف ناخواسته، watchdog را یک‌بار نصب کنید:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\ops\windows\Install-AiBusWatchdog.ps1
+```
+
+این task هر پنج دقیقه `http://127.0.0.1:8088/health` را بررسی می‌کند؛ فقط در صورت ناموفق‌بودن health check، Docker Desktop را اجرا و `docker compose up -d` را فراخوانی می‌کند. لاگ رخدادهای بازیابی در `%LOCALAPPDATA%\AiBus\watchdog` نگهداری و پس از ۳۰ روز پاک می‌شود.
+
 ## تنظیم اولیه سوپرادمین
 
 ۱. با یکی از موبایل‌های سوپرادمین `09015909044` یا `09198909381` وارد شوید.
